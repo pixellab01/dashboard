@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
       if (baseUrl) {
         redirectUri = `${baseUrl}/api/google-drive/callback`
       } else {
-        redirectUri = 'http://localhost:3000/api/google-drive/callback'
+        redirectUri = 'http://localhost:3001/api/google-drive/callback'
       }
     }
     

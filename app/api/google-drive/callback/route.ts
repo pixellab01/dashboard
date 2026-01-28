@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
       if (baseUrl) {
         redirectUri = `${baseUrl}/api/google-drive/callback`
       } else {
-        redirectUri = 'http://localhost:3000/api/google-drive/callback'
+        redirectUri = 'http://localhost:3001/api/google-drive/callback'
       }
     }
     
@@ -213,7 +213,7 @@ export async function GET(request: NextRequest) {
     
     if (errorMessage.includes('redirect_uri_mismatch') || errorResponse.error === 'redirect_uri_mismatch') {
       const redirectUri = process.env.GOOGLE_DRIVE_REDIRECT_URI || 
-        `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/google-drive/callback`
+        `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3001'}/api/google-drive/callback`
       
       return NextResponse.json(
         {
