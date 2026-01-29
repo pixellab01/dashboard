@@ -1,47 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { computeAllAnalytics } from '@/lib/analytics'
+import { proxyToPythonBackend } from '@/lib/api-proxy'
 
 /**
  * POST /api/analytics/compute
- * 
- * Compute analytics from Redis data
+ * Proxy analytics compute request to Python backend
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { sessionId } = body
+    const { searchParams } = new URL(request.url)
+    const asyncMode = searchParams.get('async_mode') === 'true'
 
-    if (!sessionId) {
+    if (!body.sessionId) {
       return NextResponse.json(
         { error: 'Session ID is required' },
         { status: 400 }
       )
     }
 
-    // Extract filter parameters if provided
-    const filters = body.filters || undefined
+    const response = await proxyToPythonBackend('/api/analytics/compute', {
+      method: 'POST',
+      body,
+      queryParams: asyncMode ? { async_mode: 'true' } : undefined,
+    })
 
-    // Compute all analytics
-    const result = await computeAllAnalytics(sessionId, filters)
-
-    if (!result.success) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: result.error || 'Failed to compute analytics',
-        },
-        { status: 500 }
-      )
-    }
-
-    return NextResponse.json(
-      {
-        success: true,
-        message: 'Analytics computed successfully',
-        sessionId,
-      },
-      { status: 200 }
-    )
+    const data = await response.json()
+    
+    return NextResponse.json(data, { status: response.status })
   } catch (error: any) {
     console.error('Error computing analytics:', error)
     return NextResponse.json(

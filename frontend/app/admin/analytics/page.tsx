@@ -46,10 +46,6 @@ function AnalyticsDashboardContent() {
   const [availableProductNamesTop10, setAvailableProductNamesTop10] = useState<string[]>([])
   const [availableStatuses, setAvailableStatuses] = useState<string[]>([])
   const [dataError, setDataError] = useState<string | null>(null)
-  const [ttlInfo, setTtlInfo] = useState<{
-    shipping: { ttl: number; expiresAt: string | null }
-    analytics: { [key: string]: { ttl: number; expiresAt: string | null } }
-  } | null>(null)
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -140,6 +136,12 @@ function AnalyticsDashboardContent() {
       return
     }
     
+    // If sessionId came from URL, store it in localStorage for future use
+    if (urlSessionId && urlSessionId !== storedSessionId) {
+      localStorage.setItem('analyticsSessionId', urlSessionId)
+      console.log('Session ID stored from URL:', urlSessionId)
+    }
+    
     setSessionId(currentSessionId)
     setIsLoading(false)
     fetchFilterOptions(currentSessionId)
@@ -149,125 +151,8 @@ function AnalyticsDashboardContent() {
   useEffect(() => {
     if (sessionId) {
       fetchAllData(sessionId, filters)
-      
-      // Connect to WebSocket for real-time TTL updates
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsHost = process.env.NEXT_PUBLIC_WEBSOCKET_URL || `${wsProtocol}//${window.location.hostname}:8080`
-      const wsUrl = `${wsHost}?sessionId=${sessionId}`
-      
-      let ws: WebSocket | null = null
-      let reconnectTimeout: NodeJS.Timeout | null = null
-      let reconnectAttempts = 0
-      const maxReconnectAttempts = 5
-      
-      const connectWebSocket = () => {
-        try {
-          ws = new WebSocket(wsUrl)
-          
-          ws.onopen = () => {
-            console.log('WebSocket connected for TTL updates')
-            reconnectAttempts = 0
-          }
-          
-          ws.onmessage = (event) => {
-            try {
-              const message = JSON.parse(event.data)
-              
-              if (message.type === 'connected') {
-                console.log('WebSocket handshake complete')
-              } else if (message.type === 'ttl-update') {
-                setTtlInfo(message.data)
-              } else if (message.type === 'error') {
-                console.error('WebSocket error:', message.error)
-              }
-            } catch (error) {
-              console.error('Error parsing WebSocket message:', error)
-            }
-          }
-          
-          ws.onerror = (error) => {
-            console.error('WebSocket error:', error)
-          }
-          
-          ws.onclose = () => {
-            console.log('WebSocket disconnected')
-            ws = null
-            
-            // Attempt to reconnect with exponential backoff
-            if (reconnectAttempts < maxReconnectAttempts) {
-              const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000)
-              reconnectAttempts++
-              reconnectTimeout = setTimeout(() => {
-                console.log(`Attempting to reconnect WebSocket (attempt ${reconnectAttempts})...`)
-                connectWebSocket()
-              }, delay)
-            } else {
-              console.log('Max reconnection attempts reached, falling back to polling')
-              // Fallback to polling if WebSocket fails
-              const fallbackInterval = setInterval(() => {
-                fetchTTLInfo(sessionId)
-              }, 5000)
-              
-              return () => clearInterval(fallbackInterval)
-            }
-          }
-        } catch (error) {
-          console.error('Error creating WebSocket connection:', error)
-          // Fallback to SSE if WebSocket fails
-          const eventSource = new EventSource(`/api/analytics/ttl-ws?sessionId=${sessionId}`)
-          
-          eventSource.onmessage = (event) => {
-            try {
-              const message = JSON.parse(event.data)
-              if (message.type === 'ttl-update') {
-                setTtlInfo(message.data)
-              }
-            } catch (error) {
-              console.error('Error parsing SSE message:', error)
-            }
-          }
-          
-          eventSource.onerror = () => {
-            eventSource.close()
-            // Final fallback to polling
-            const fallbackInterval = setInterval(() => {
-              fetchTTLInfo(sessionId)
-            }, 5000)
-            
-            return () => clearInterval(fallbackInterval)
-          }
-          
-          return () => {
-            eventSource.close()
-          }
-        }
-      }
-      
-      connectWebSocket()
-      
-      return () => {
-        if (ws) {
-          ws.close()
-          ws = null
-        }
-        if (reconnectTimeout) {
-          clearTimeout(reconnectTimeout)
-        }
-      }
     }
   }, [filters, sessionId])
-
-  const fetchTTLInfo = async (currentSessionId: string) => {
-    try {
-      const { getTtlInfo } = await import('@/lib/api-client')
-      const result = await getTtlInfo(currentSessionId)
-      if (result.success && result.data) {
-        setTtlInfo(result.data)
-      }
-    } catch (error) {
-      console.error('Error fetching TTL info:', error)
-    }
-  }
 
   const fetchFilterOptions = async (currentSessionId: string) => {
     try {
@@ -277,19 +162,17 @@ function AnalyticsDashboardContent() {
       if (result.success && result.data) {
         setAvailableChannels(result.data.channels || [])
         setAvailableSkus(result.data.skus || [])
-        setAvailableSkusTop10(result.data.skus || []) // Use all SKUs for top10
+        setAvailableSkusTop10(result.data.skusTop10 || [])
         setAvailableProductNames(result.data.productNames || [])
-        setAvailableProductNamesTop10(result.data.productNames || []) // Use all product names for top10
+        setAvailableProductNamesTop10(result.data.productNamesTop10 || [])
         setAvailableStatuses(result.data.statuses || [])
         
         // Debug logging
         console.log('Filter options loaded:', {
-          skusTop10Count: result.data.skus?.length || 0,
-          productNamesTop10Count: result.data.productNames?.length || 0,
-          skusTop10: result.data.skus?.slice(0, 10),
-          productNamesTop10: result.data.productNames?.slice(0, 10),
-          allProductNamesCount: result.data.productNames?.length || 0,
-          firstFewProductNames: result.data.productNames?.slice(0, 5),
+          totalSkus: result.data.skus?.length || 0,
+          skusTop10: result.data.skusTop10,
+          totalProductNames: result.data.productNames?.length || 0,
+          productNamesTop10: result.data.productNamesTop10,
         })
         
         // Additional validation
@@ -350,6 +233,12 @@ function AnalyticsDashboardContent() {
         statusesData,
         paymentOutcomeData,
         productAnalysisData,
+        ndrCountData,
+        addressTypeShareData,
+        averageOrderTatData,
+        fadDelCanRtoData,
+        cancellationReasonTrackerData,
+        deliveryPartnerAnalysisData,
       ] = await Promise.all([
         fetchAnalytics('weekly-summary', { sessionId: currentSessionId, ...currentFilters }),
         fetchAnalytics('ndr-weekly', { sessionId: currentSessionId, ...currentFilters }),
@@ -362,6 +251,12 @@ function AnalyticsDashboardContent() {
         fetchAnalytics('order-statuses', { sessionId: currentSessionId, ...currentFilters }),
         fetchAnalytics('payment-method-outcome', { sessionId: currentSessionId, ...currentFilters }),
         fetchAnalytics('product-analysis', { sessionId: currentSessionId, ...currentFilters }),
+        fetchAnalytics('ndr-count', { sessionId: currentSessionId, ...currentFilters }),
+        fetchAnalytics('address-type-share', { sessionId: currentSessionId, ...currentFilters }),
+        fetchAnalytics('average-order-tat', { sessionId: currentSessionId, ...currentFilters }),
+        fetchAnalytics('fad-del-can-rto', { sessionId: currentSessionId, ...currentFilters }),
+        fetchAnalytics('cancellation-reason-tracker', { sessionId: currentSessionId, ...currentFilters }),
+        fetchAnalytics('delivery-partner-analysis', { sessionId: currentSessionId, ...currentFilters }),
       ])
 
       // Set data immediately for successful APIs (progressive loading - show data as it arrives)
@@ -372,25 +267,37 @@ function AnalyticsDashboardContent() {
       if (cancellationData.success) setCancellationData(cancellationData.data || [])
       if (channelData.success) setChannelShare(channelData.data || [])
       if (paymentData.success) setPaymentMethodData(paymentData.data || [])
-      if (statusesData.success) setOrderStatusesData(statusesData.data || [])
+      if (statusesData.success) {
+        const data = statusesData.data
+        // Ensure data is an array
+        setOrderStatusesData(Array.isArray(data) ? data : [])
+      }
       if (paymentOutcomeData.success) {
         setPaymentMethodOutcomeData(paymentOutcomeData.data || [])
         setStatusCategories(paymentOutcomeData.statusCategories || [])
       }
       if (productAnalysisData.success) setProductAnalysisData(productAnalysisData.data || [])
+      if (ndrCountData.success) setNdrCountData(ndrCountData.data || [])
+      if (addressTypeShareData.success) setAddressTypeShareData(addressTypeShareData.data || [])
+      if (averageOrderTatData.success) setAverageOrderTatData(averageOrderTatData.data || [])
+      if (fadDelCanRtoData.success) setFadDelCanRtoData(fadDelCanRtoData.data || [])
+      if (cancellationReasonTrackerData.success) setCancellationReasonTrackerData(cancellationReasonTrackerData.data || [])
+      if (deliveryPartnerAnalysisData.success) setDeliveryPartnerAnalysisData(deliveryPartnerAnalysisData.data || [])
 
       // Set summary metrics from API
-      if (summaryData.success && summaryData.metrics) {
+      if (summaryData.success) {
+        // Handle both formats: summaryData.metrics or summaryData.data
+        const metrics = summaryData.metrics || summaryData.data || {}
         setSummaryMetrics({
-          syncedOrders: summaryData.metrics.syncedOrders || 0,
-          gmv: summaryData.metrics.gmv || 0,
-          inTransitPercent: summaryData.metrics.inTransitPercent || 0,
-          deliveryPercent: summaryData.metrics.deliveryPercent || 0,
-          rtoPercent: summaryData.metrics.rtoPercent || 0,
-          inTransitOrders: summaryData.metrics.inTransitOrders || 0,
-          deliveredOrders: summaryData.metrics.deliveredOrders || 0,
-          rtoOrders: summaryData.metrics.rtoOrders || 0,
-          undeliveredOrders: summaryData.metrics.undeliveredOrders || 0,
+          syncedOrders: metrics.syncedOrders || metrics.total_orders || 0,
+          gmv: metrics.gmv || metrics.total_gmv || 0,
+          inTransitPercent: metrics.inTransitPercent || 0,
+          deliveryPercent: metrics.deliveryPercent || metrics.delivery_rate || 0,
+          rtoPercent: metrics.rtoPercent || metrics.rto_rate || 0,
+          inTransitOrders: metrics.inTransitOrders || 0,
+          deliveredOrders: metrics.deliveredOrders || metrics.total_delivered || 0,
+          rtoOrders: metrics.rtoOrders || metrics.total_rto || 0,
+          undeliveredOrders: metrics.undeliveredOrders || 0,
         })
       }
 
@@ -406,7 +313,13 @@ function AnalyticsDashboardContent() {
         (!summaryData.success && summaryData.error) ||
         (!statusesData.success && statusesData.error) ||
         (!paymentOutcomeData.success && paymentOutcomeData.error) ||
-        (!productAnalysisData.success && productAnalysisData.error)
+        (!productAnalysisData.success && productAnalysisData.error) ||
+        (!ndrCountData.success && ndrCountData.error) ||
+        (!addressTypeShareData.success && addressTypeShareData.error) ||
+        (!averageOrderTatData.success && averageOrderTatData.error) ||
+        (!fadDelCanRtoData.success && fadDelCanRtoData.error) ||
+        (!cancellationReasonTrackerData.success && cancellationReasonTrackerData.error) ||
+        (!deliveryPartnerAnalysisData.success && deliveryPartnerAnalysisData.error)
 
       const needsComputation = 
         !weeklyData.success || 
@@ -419,7 +332,13 @@ function AnalyticsDashboardContent() {
         !summaryData.success ||
         !statusesData.success ||
         !paymentOutcomeData.success ||
-        !productAnalysisData.success
+        !productAnalysisData.success ||
+        !ndrCountData.success ||
+        !addressTypeShareData.success ||
+        !averageOrderTatData.success ||
+        !fadDelCanRtoData.success ||
+        !cancellationReasonTrackerData.success ||
+        !deliveryPartnerAnalysisData.success
 
       // If there are errors indicating data expired, show message
       if (hasErrors && currentSessionId) {
@@ -490,7 +409,15 @@ function AnalyticsDashboardContent() {
         })
         
         if (result.success && result.data) {
-          setRawShippingData(result.data || [])
+          const data = result.data || []
+          console.log('Raw shipping data fetched:', {
+            count: data.length,
+            sampleRecord: data[0],
+            sampleKeys: data[0] ? Object.keys(data[0]).slice(0, 15) : []
+          })
+          setRawShippingData(data)
+        } else {
+          console.error('Failed to fetch raw shipping data:', result.error)
         }
       } catch (error) {
         console.error('Error fetching raw shipping data:', error)
@@ -611,25 +538,52 @@ function AnalyticsDashboardContent() {
       sortDate: string
     }>()
     
+    if (!records || records.length === 0) {
+      console.warn('aggregateDailyDeliveryPerformance: No records provided')
+      return []
+    }
+    
     records.forEach((record: any) => {
-      // Get order date from various possible fields
+      // Get order date from various possible fields (check both normalized and original names)
       let orderDateValue: any = null
       
-      if (record.order_date) {
+      // Try normalized snake_case fields first (from backend normalization)
+      if (record.shiprocket_created_at) {
+        orderDateValue = record.shiprocket_created_at
+      } else if (record.channel_created_at) {
+        orderDateValue = record.channel_created_at
+      } else if (record.order_date) {
         orderDateValue = record.order_date
-      } else if (record.order__date) {
-        orderDateValue = record.order__date
+      } else if (record.order_created_at) {
+        orderDateValue = record.order_created_at
+      }
+      // Try original field names (with spaces)
+      else if (record['Shiprocket Created At']) {
+        orderDateValue = record['Shiprocket Created At']
       } else if (record['Order Date']) {
         orderDateValue = record['Order Date']
-      } else if (record['Shiprocket Created At']) {
-        orderDateValue = record['Shiprocket Created At']
-      } else if (record.shiprocket__created__at) {
+      } else if (record['Channel Created At']) {
+        orderDateValue = record['Channel Created At']
+      }
+      // Try double underscore variants (legacy)
+      else if (record.shiprocket__created__at) {
         orderDateValue = record.shiprocket__created__at
       } else if (record.channel__created__at) {
         orderDateValue = record.channel__created__at
+      } else if (record.order__date) {
+        orderDateValue = record.order__date
       }
       
-      if (!orderDateValue) return
+      if (!orderDateValue) {
+        // Log first few missing dates for debugging
+        if (dayMap.size === 0) {
+          console.warn('aggregateDailyDeliveryPerformance: Record missing date field:', {
+            keys: Object.keys(record).slice(0, 10),
+            sampleRecord: record
+          })
+        }
+        return
+      }
       
       // Convert to YYYY-MM-DD format
       let dateStr: string
@@ -690,7 +644,7 @@ function AnalyticsDashboardContent() {
     // Calculate total orders for order share percentage
     const totalOrders = Array.from(dayMap.values()).reduce((sum, day) => sum + day.orders, 0)
     
-    return Array.from(dayMap.entries())
+    const result = Array.from(dayMap.entries())
       .map(([date, data]) => {
         // Calculate percentages
         const finalOrders = data.delivered + data.rto + (data.orders - data.delivered - data.rto)
@@ -724,6 +678,16 @@ function AnalyticsDashboardContent() {
       })
       .sort((a, b) => b.sortDate.localeCompare(a.sortDate)) // Sort descending (newest first)
       .map(({ sortDate, ...rest }) => rest) // Remove sortDate from final output
+    
+    console.log('aggregateDailyDeliveryPerformance result:', {
+      inputRecords: records.length,
+      outputDays: result.length,
+      totalOrders,
+      sampleResult: result.slice(0, 3),
+      dayMapSize: dayMap.size
+    })
+    
+    return result
   }
 
   // Aggregate weekly delivery performance data
@@ -808,13 +772,17 @@ function AnalyticsDashboardContent() {
   }
 
   // Prepare daily delivery performance data based on table view
-  const dailyDeliveryPerformance = tableView === 'day'
-    ? (rawShippingData.length > 0 
+  const dailyDeliveryPerformance = useMemo(() => {
+    if (tableView === 'day') {
+      return rawShippingData.length > 0 
         ? aggregateDailyDeliveryPerformance(rawShippingData)
-        : [])
-    : (weeklySummary.length > 0
+        : []
+    } else {
+      return weeklySummary.length > 0
         ? aggregateWeeklyDeliveryPerformance(weeklySummary)
-        : [])
+        : []
+    }
+  }, [tableView, rawShippingData, weeklySummary])
 
   // Aggregate products by day/week/overall - returns format similar to NDR Count
   const aggregateProductsByTime = (records: any[], view: 'day' | 'week' | 'overall'): any[] => {
@@ -1214,8 +1182,30 @@ function AnalyticsDashboardContent() {
   // Prepare products and states data based on view
   // For day/week/overall views, aggregate from raw data. For overall, use aggregated data from API if available
   // Convert API data format to timePeriods format if needed
-  const convertApiDataToTimePeriods = (apiData: any[], type: 'products' | 'states'): any[] => {
-    if (!apiData || apiData.length === 0) return []
+  const convertApiDataToTimePeriods = (apiData: any, type: 'products' | 'states'): any[] => {
+    // Handle null, undefined, or non-array data
+    if (!apiData) return []
+    
+    // If apiData is an object with a data property, extract it
+    if (typeof apiData === 'object' && !Array.isArray(apiData)) {
+      if (apiData.data && Array.isArray(apiData.data)) {
+        apiData = apiData.data
+      } else if (apiData.success && Array.isArray(apiData.data)) {
+        apiData = apiData.data
+      } else {
+        // If it's an object but not the expected format, return empty array
+        console.warn(`convertApiDataToTimePeriods: Expected array but got object:`, apiData)
+        return []
+      }
+    }
+    
+    // Ensure apiData is an array
+    if (!Array.isArray(apiData)) {
+      console.warn(`convertApiDataToTimePeriods: Expected array but got ${typeof apiData}:`, apiData)
+      return []
+    }
+    
+    if (apiData.length === 0) return []
     
     // Check if data already has timePeriods structure
     if (apiData[0]?.timePeriods) return apiData
@@ -1430,9 +1420,24 @@ function AnalyticsDashboardContent() {
   }
 
   // Prepare NDR count data based on view
-  const ndrCountDataByView = rawShippingData.length > 0
-    ? aggregateNdrCountByTime(rawShippingData, ndrCountTableView)
-    : []
+  // Use API data for overall view, local computation for day/week views
+  const ndrCountDataByView = useMemo(() => {
+    if (ndrCountTableView === 'overall' && ndrCountData.length > 0) {
+      // Transform API data to match expected format
+      return ndrCountData.map((item: any) => ({
+        reason: item.reason,
+        timePeriods: [{
+          time: null,
+          timeKey: 'overall',
+          delivered: item.delivered,
+          total: item.total,
+        }],
+      }))
+    } else if (rawShippingData.length > 0) {
+      return aggregateNdrCountByTime(rawShippingData, ndrCountTableView)
+    }
+    return []
+  }, [ndrCountTableView, ndrCountData, rawShippingData])
   
   // Get all unique time periods for column headers
   const ndrCountTimePeriods = ndrCountDataByView.length > 0
@@ -1596,9 +1601,23 @@ function AnalyticsDashboardContent() {
   }
 
   // Prepare address type share data based on view
-  const addressTypeShareDataByView = rawShippingData.length > 0
-    ? aggregateAddressTypeShareByTime(rawShippingData, addressTypeShareTableView)
-    : []
+  // Use API data for overall view, local computation for day/week views
+  const addressTypeShareDataByView = useMemo(() => {
+    if (addressTypeShareTableView === 'overall' && addressTypeShareData.length > 0) {
+      // Transform API data to match expected format
+      return addressTypeShareData.map((item: any) => ({
+        addressType: item.addressType,
+        timePeriods: [{
+          time: null,
+          timeKey: 'overall',
+          percent: item.percent,
+        }],
+      }))
+    } else if (rawShippingData.length > 0) {
+      return aggregateAddressTypeShareByTime(rawShippingData, addressTypeShareTableView)
+    }
+    return []
+  }, [addressTypeShareTableView, addressTypeShareData, rawShippingData])
   
   // Get all unique time periods for column headers
   const addressTypeShareTimePeriods = addressTypeShareDataByView.length > 0 && addressTypeShareTableView !== 'overall'
@@ -1914,9 +1933,16 @@ function AnalyticsDashboardContent() {
   }
 
   // Prepare average order TAT data based on view
-  const averageOrderTatDataByView = rawShippingData.length > 0
-    ? aggregateAverageOrderTatByTime(rawShippingData, averageOrderTatTableView)
-    : []
+  // Use API data for overall view, local computation for day/week views
+  const averageOrderTatDataByView = useMemo(() => {
+    if (averageOrderTatTableView === 'overall' && averageOrderTatData.length > 0) {
+      // API data is already in the right format
+      return averageOrderTatData
+    } else if (rawShippingData.length > 0) {
+      return aggregateAverageOrderTatByTime(rawShippingData, averageOrderTatTableView)
+    }
+    return []
+  }, [averageOrderTatTableView, averageOrderTatData, rawShippingData])
   
   // Get all unique time periods for column headers
   const averageOrderTatTimePeriods = averageOrderTatDataByView.length > 0 && averageOrderTatTableView !== 'overall'
@@ -2272,9 +2298,23 @@ function AnalyticsDashboardContent() {
   }
 
   // Prepare FAD/DEL/CAN/RTO % data based on view
-  const fadDelCanRtoDataByView = rawShippingData.length > 0
-    ? aggregateFadDelCanRtoByTime(rawShippingData, fadDelCanRtoTableView)
-    : []
+  // Use API data for overall view, local computation for day/week views
+  const fadDelCanRtoDataByView = useMemo(() => {
+    if (fadDelCanRtoTableView === 'overall' && fadDelCanRtoData.length > 0) {
+      // Transform API data to match expected format
+      return fadDelCanRtoData.map((item: any) => ({
+        metric: item.metric,
+        timePeriods: [{
+          time: null,
+          timeKey: 'overall',
+          percent: item.percent,
+        }],
+      }))
+    } else if (rawShippingData.length > 0) {
+      return aggregateFadDelCanRtoByTime(rawShippingData, fadDelCanRtoTableView)
+    }
+    return []
+  }, [fadDelCanRtoTableView, fadDelCanRtoData, rawShippingData])
   
   // Get all unique time periods for FAD/DEL/CAN/RTO %
   const fadDelCanRtoTimePeriods = fadDelCanRtoDataByView.length > 0 && fadDelCanRtoTableView !== 'overall'
@@ -2294,9 +2334,23 @@ function AnalyticsDashboardContent() {
   const fadDelCanRtoShowTime = fadDelCanRtoTableView === 'day' || fadDelCanRtoTableView === 'week'
 
   // Prepare cancellation reason tracker data based on view
-  const cancellationReasonTrackerDataByView = rawShippingData.length > 0
-    ? aggregateCancellationReasonTrackerByTime(rawShippingData, cancellationReasonTrackerTableView)
-    : []
+  // Use API data for overall view, local computation for day/week views
+  const cancellationReasonTrackerDataByView = useMemo(() => {
+    if (cancellationReasonTrackerTableView === 'overall' && cancellationReasonTrackerData.length > 0) {
+      // Transform API data to match expected format
+      return cancellationReasonTrackerData.map((item: any) => ({
+        reason: item.reason,
+        timePeriods: [{
+          time: null,
+          timeKey: 'overall',
+          percent: item.percent,
+        }],
+      }))
+    } else if (rawShippingData.length > 0) {
+      return aggregateCancellationReasonTrackerByTime(rawShippingData, cancellationReasonTrackerTableView)
+    }
+    return []
+  }, [cancellationReasonTrackerTableView, cancellationReasonTrackerData, rawShippingData])
   
   // Get all unique time periods for cancellation reason tracker
   const cancellationReasonTrackerTimePeriods = cancellationReasonTrackerDataByView.length > 0 && cancellationReasonTrackerTableView !== 'overall'
@@ -2504,9 +2558,29 @@ function AnalyticsDashboardContent() {
   }
 
   // Prepare delivery partner analysis data based on view
-  const deliveryPartnerAnalysisDataByView = rawShippingData.length > 0
-    ? aggregateDeliveryPartnerAnalysisByTime(rawShippingData, deliveryPartnerAnalysisTableView)
-    : []
+  // Use API data for overall view, local computation for day/week views
+  const deliveryPartnerAnalysisDataByView = useMemo(() => {
+    if (deliveryPartnerAnalysisTableView === 'overall' && deliveryPartnerAnalysisData.length > 0) {
+      // Transform API data to match expected format
+      return deliveryPartnerAnalysisData.map((item: any) => ({
+        state: item.state,
+        courier: item.courier,
+        timePeriods: [{
+          time: null,
+          timeKey: 'overall',
+          delivered: item.delivered,
+          cancelled: item.cancelled,
+          in_transit: item.in_transit,
+          rto: item.rto,
+          other: item.other,
+          total_orders: item.total_orders,
+        }],
+      }))
+    } else if (rawShippingData.length > 0) {
+      return aggregateDeliveryPartnerAnalysisByTime(rawShippingData, deliveryPartnerAnalysisTableView)
+    }
+    return []
+  }, [deliveryPartnerAnalysisTableView, deliveryPartnerAnalysisData, rawShippingData])
   
   // Filter delivery partner analysis data by selected courier
   const filteredDeliveryPartnerAnalysisData = useMemo(() => {
@@ -2622,7 +2696,7 @@ function AnalyticsDashboardContent() {
   }
 
   // Chart 1: Order Lifecycle Funnel Data (Grouped statuses)
-  const lifecycleData = orderStatusesData.length > 0
+  const lifecycleData = Array.isArray(orderStatusesData) && orderStatusesData.length > 0
     ? (() => {
         const categoryMap = new Map<string, number>()
         orderStatusesData.forEach((item: any) => {
@@ -2662,7 +2736,7 @@ function AnalyticsDashboardContent() {
   // where each category is a percentage
 
   // Chart 3: Operational Status Breakdown (Top 8 statuses by volume)
-  const operationalStatusData = orderStatusesData.length > 0
+  const operationalStatusData = Array.isArray(orderStatusesData) && orderStatusesData.length > 0
     ? orderStatusesData
         .map((item: any) => ({
           status: item.status || 'UNKNOWN',
@@ -2676,7 +2750,7 @@ function AnalyticsDashboardContent() {
     : []
 
   // Calculate KPIs
-  const totalOrders = summaryMetrics.syncedOrders || orderStatusesData.reduce((sum: number, item: any) => sum + (item.count || 0), 0)
+  const totalOrders = summaryMetrics.syncedOrders || (Array.isArray(orderStatusesData) ? orderStatusesData.reduce((sum: number, item: any) => sum + (item.count || 0), 0) : 0)
   const deliveredCount = lifecycleData.find(item => item.category === 'Delivered')?.count || 0
   const rtoCount = lifecycleData.find(item => item.category === 'RTO Flow')?.count || 0
   const canceledCount = lifecycleData.find(item => item.category === 'Canceled / Lost')?.count || 0
@@ -2798,39 +2872,6 @@ function AnalyticsDashboardContent() {
 
         {/* Main Content */}
         <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* TTL Info Display */}
-        {ttlInfo && ttlInfo.shipping.ttl > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-6 p-4 bg-blue-900/30 border border-blue-500/50 rounded-lg"
-          >
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div>
-                <h3 className="text-blue-400 font-semibold text-sm">Data TTL Information</h3>
-                <p className="text-blue-300 text-xs mt-1">
-                  Shipping Data: {ttlInfo.shipping.ttl} seconds remaining 
-                  {ttlInfo.shipping.expiresAt && ` (Expires at ${new Date(ttlInfo.shipping.expiresAt).toLocaleTimeString()})`}
-                </p>
-              </div>
-              <div className="text-xs text-blue-300">
-                <p className="mb-1">Analytics Cache:</p>
-                <div className="flex gap-2">
-                  {Object.entries(ttlInfo.analytics).slice(0, 3).map(([type, info]) => (
-                    <span key={type} className="bg-blue-800/50 px-2 py-1 rounded">
-                      {type}: {info.ttl}s
-                    </span>
-                  ))}
-                  {Object.keys(ttlInfo.analytics).length > 3 && (
-                    <span className="bg-blue-800/50 px-2 py-1 rounded">
-                      +{Object.keys(ttlInfo.analytics).length - 3} more
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
 
         {loadingData ? (
           <div className="text-center py-12">
@@ -3006,9 +3047,13 @@ function AnalyticsDashboardContent() {
                 </div>
               ) : isDeliveryPerformanceVisible ? (
                 <div className="flex items-center justify-center h-[200px] text-gray-400">
-                  {tableView === 'day' && rawShippingData.length === 0
-                    ? 'Loading daily data...'
-                    : 'No data available'}
+                  {loadingData 
+                    ? 'Loading data...'
+                    : (tableView === 'day' && rawShippingData.length === 0)
+                      ? 'No daily data available'
+                      : (tableView === 'week' && weeklySummary.length === 0)
+                        ? 'No weekly data available'
+                        : 'No data available'}
                 </div>
               ) : null}
             </motion.div>

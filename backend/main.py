@@ -8,23 +8,10 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import uvicorn
 
-from backend.analytics import compute_all_analytics
-from backend.redis_client import (
-    get_shipping_data_from_redis,
-    get_analytics_from_redis,
-    get_analytics_by_filters,
-    get_shipping_metadata_from_redis,
-    is_session_valid,
-    generate_session_id,
-    get_shipping_data_ttl,
-    build_analytics_key,
-    is_source_data_valid,
-    save_analytics_to_redis,
-    get_key_ttl
-)
-from backend.analytics import filter_shipping_data
+from backend.analytics import compute_all_analytics, filter_shipping_data, compute_single_analytics
+from backend.data_store import get_shipping_data, get_shipping_metadata
 import pandas as pd
-from backend.rq_queue import enqueue_analytics_computation, get_job_status, get_queue_stats
+import uuid
 
 # Import API routers
 from backend.api import auth, google_drive, admin, stats
@@ -70,40 +57,37 @@ async def root():
 
 
 @app.post("/api/analytics/compute")
-async def compute_analytics(request: ComputeAnalyticsRequest, async_mode: bool = False):
+async def compute_analytics(request: ComputeAnalyticsRequest):
     """
-    POST /api/analytics/compute?async_mode=true
-    Compute analytics from Redis data
-    If async_mode=true, queues the job and returns immediately
+    POST /api/analytics/compute
+    Compute analytics from stored data
     """
     try:
         if not request.sessionId:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        if async_mode:
-            # Queue the job for async processing
-            job = enqueue_analytics_computation(request.sessionId, request.filters)
-            return {
-                "success": True,
-                "message": "Analytics computation queued",
-                "sessionId": request.sessionId,
-                "jobId": job.id if job else None,
-            }
-        else:
-            # Compute synchronously
-            result = compute_all_analytics(request.sessionId, request.filters)
-            
-            if not result.get('success'):
-                raise HTTPException(
-                    status_code=500,
-                    detail=result.get('error', 'Failed to compute analytics')
-                )
-            
-            return {
-                "success": True,
-                "message": "Analytics computed successfully",
-                "sessionId": request.sessionId,
-            }
+        # Get data from in-memory store
+        data = get_shipping_data(request.sessionId)
+        if not data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No data found for session {request.sessionId}. Please read the shipping file first."
+            )
+        
+        # Compute analytics
+        result = compute_all_analytics(data, request.filters)
+        
+        if not result.get('success'):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get('error', 'Failed to compute analytics')
+            )
+        
+        return {
+            "success": True,
+            "message": "Analytics computed successfully",
+            "sessionId": request.sessionId,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -111,134 +95,7 @@ async def compute_analytics(request: ComputeAnalyticsRequest, async_mode: bool =
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/analytics/{analytics_type}")
-async def get_analytics(analytics_type: str, sessionId: str, filters: Optional[str] = None):
-    """
-    GET /api/analytics/{analytics_type}?sessionId=xxx&filters=xxx
-    Get computed analytics from Redis
-    """
-    try:
-        if not sessionId:
-            raise HTTPException(status_code=400, detail="Session ID is required")
-        
-        # Parse filters if provided
-        filter_dict = None
-        if filters:
-            import json
-            filter_dict = json.loads(filters)
-        
-        # Get analytics
-        if filter_dict:
-            analytics_data = get_analytics_by_filters(sessionId, analytics_type, filter_dict)
-        else:
-            analytics_data = get_analytics_from_redis(sessionId, analytics_type)
-        
-        if analytics_data is None:
-            raise HTTPException(status_code=404, detail="Analytics not found")
-        
-        return analytics_data
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error getting analytics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/analytics/weekly-summary")
-async def get_weekly_summary(sessionId: str, filters: Optional[str] = None):
-    """Get weekly summary analytics"""
-    return await get_analytics("weekly-summary", sessionId, filters)
-
-
-@app.get("/api/analytics/ndr-weekly")
-async def get_ndr_weekly(sessionId: str, filters: Optional[str] = None):
-    """Get NDR weekly analytics"""
-    return await get_analytics("ndr-weekly", sessionId, filters)
-
-
-@app.get("/api/analytics/state-performance")
-async def get_state_performance(sessionId: str, filters: Optional[str] = None):
-    """Get state performance analytics"""
-    return await get_analytics("state-performance", sessionId, filters)
-
-
-@app.get("/api/analytics/category-share")
-async def get_category_share(sessionId: str, filters: Optional[str] = None):
-    """Get category share analytics"""
-    return await get_analytics("category-share", sessionId, filters)
-
-
-@app.get("/api/analytics/cancellation-tracker")
-async def get_cancellation_tracker(sessionId: str, filters: Optional[str] = None):
-    """Get cancellation tracker analytics"""
-    return await get_analytics("cancellation-tracker", sessionId, filters)
-
-
-@app.get("/api/analytics/channel-share")
-async def get_channel_share(sessionId: str, filters: Optional[str] = None):
-    """Get channel share analytics"""
-    return await get_analytics("channel-share", sessionId, filters)
-
-
-@app.get("/api/analytics/payment-method")
-async def get_payment_method(sessionId: str, filters: Optional[str] = None):
-    """Get payment method analytics"""
-    return await get_analytics("payment-method", sessionId, filters)
-
-
-@app.get("/api/analytics/product-analysis")
-async def get_product_analysis(sessionId: str, filters: Optional[str] = None):
-    """Get product analysis analytics"""
-    return await get_analytics("product-analysis", sessionId, filters)
-
-
-@app.get("/api/analytics/summary-metrics")
-async def get_summary_metrics(sessionId: str, filters: Optional[str] = None):
-    """Get summary metrics analytics"""
-    return await get_analytics("summary-metrics", sessionId, filters)
-
-
-@app.get("/api/analytics/order-statuses")
-async def get_order_statuses(sessionId: str, filters: Optional[str] = None):
-    """Get order statuses analytics"""
-    return await get_analytics("order-statuses", sessionId, filters)
-
-
-@app.get("/api/analytics/payment-method-outcome")
-async def get_payment_method_outcome(sessionId: str, filters: Optional[str] = None):
-    """Get payment method outcome analytics"""
-    return await get_analytics("payment-method-outcome", sessionId, filters)
-
-
-@app.get("/api/stats/session")
-async def get_session_stats(sessionId: str):
-    """Get session statistics"""
-    try:
-        if not sessionId:
-            raise HTTPException(status_code=400, detail="Session ID is required")
-        
-        metadata = get_shipping_metadata_from_redis(sessionId)
-        ttl = get_shipping_data_ttl(sessionId)
-        is_valid = is_session_valid(sessionId)
-        
-        return {
-            "sessionId": sessionId,
-            "isValid": is_valid,
-            "ttl": ttl,
-            "metadata": metadata,
-        }
-    except Exception as e:
-        print(f"Error getting stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/session/generate")
-async def generate_session():
-    """Generate a new session ID"""
-    session_id = generate_session_id()
-    return {"sessionId": session_id}
-
-
+# Specific routes must be defined BEFORE the generic route to avoid conflicts
 @app.get("/api/analytics/filter-options")
 async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku: Optional[str] = None):
     """Get filter options (channels, SKUs, product names, statuses)"""
@@ -246,28 +103,19 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
         if not sessionId:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        # Check if source data is valid
-        if not is_source_data_valid(sessionId):
-            return {
-                "success": False,
-                "error": "Source data has expired. Please read the shipping file again."
-            }
-        
-        # Build cache key
-        cache_key = f"filter-options:{channel or 'all'}:{sku or 'all'}"
-        
-        # Try to get from cache
-        cached_result = get_analytics_from_redis(sessionId, cache_key)
-        if cached_result:
-            return cached_result
-        
-        # Get data from Redis
-        data = get_shipping_data_from_redis(sessionId)
+        # Get data from in-memory store
+        data = get_shipping_data(sessionId)
         if not data or len(data) == 0:
-            raise HTTPException(status_code=404, detail="No data found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
+            )
         
         # Convert to DataFrame for easier filtering
         df = pd.DataFrame(data)
+        
+        # Debug: Print available columns for SKU detection
+        print(f"📋 Available columns for filter-options (first 30): {df.columns.tolist()[:30]}")
         
         # Apply channel filter if provided
         if channel and channel != 'All':
@@ -282,7 +130,9 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
         # Apply SKU filter if provided
         if sku and sku != 'All':
             sku_col = None
-            for col in ['master_s_k_u', 'master_sku', 'sku', 'channel_s_k_u', 'channel_sku']:
+            # Check both single and double underscore variants (after normalization)
+            for col in ['master__s_k_u', 'master_s_k_u', 'master_sku', 'sku', 
+                       'channel__s_k_u', 'channel_s_k_u', 'channel_sku', 'channel__sku']:
                 if col in df.columns:
                     sku_col = col
                     break
@@ -298,7 +148,7 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
         product_name_counts = {}
         statuses = set()
         
-        # Channel extraction
+        # Channel extraction - check both single and double underscore variants
         channel_col = None
         for col in ['channel', 'Channel', 'channel__']:
             if col in df.columns:
@@ -308,23 +158,42 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
             channels = set(df[channel_col].dropna().astype(str).unique())
             channels = {c for c in channels if c.lower() not in ['none', 'n/a', '']}
         
-        # SKU extraction
-        sku_cols = ['master_s_k_u', 'master_sku', 'sku', 'channel_s_k_u', 'channel_sku']
+        # SKU extraction - check both single and double underscore variants
+        sku_cols = ['master__s_k_u', 'master_s_k_u', 'master_sku', 'sku', 
+                   'channel__s_k_u', 'channel_s_k_u', 'channel_sku', 'channel__sku']
+        sku_col_found = None
         for col in sku_cols:
             if col in df.columns:
+                sku_col_found = col
+                print(f"✅ Found SKU column: {col}")
                 for val in df[col].dropna().astype(str):
                     val = val.strip()
                     if val and val.lower() not in ['none', 'n/a', 'na', 'null', 'undefined', '']:
                         sku_counts[val] = sku_counts.get(val, 0) + 1
+                break  # Use first found column
         
-        # Product name extraction
-        product_cols = ['product_name', 'product__name', 'Product Name']
+        if not sku_col_found:
+            print(f"⚠️ No SKU column found! Available columns: {df.columns.tolist()[:40]}")
+        else:
+            print(f"✅ Extracted {len(sku_counts)} unique SKUs")
+        
+        # Product name extraction - check both single and double underscore variants
+        product_cols = ['product__name', 'product_name', 'Product Name']
+        product_col_found = None
         for col in product_cols:
             if col in df.columns:
+                product_col_found = col
+                print(f"✅ Found Product Name column: {col}")
                 for val in df[col].dropna().astype(str):
                     val = val.strip()
                     if val and val.lower() not in ['none', 'n/a', 'na', 'null', 'undefined', '']:
                         product_name_counts[val] = product_name_counts.get(val, 0) + 1
+                break  # Use first found column
+        
+        if not product_col_found:
+            print(f"⚠️ No Product Name column found!")
+        else:
+            print(f"✅ Extracted {len(product_name_counts)} unique product names")
         
         # Status extraction
         status_cols = ['delivery_status', 'status', 'original_status', 'current_status']
@@ -361,62 +230,11 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
             "statuses": sorted(list(statuses)),
         }
         
-        # Cache the result
-        save_analytics_to_redis(sessionId, cache_key, result)
-        
         return result
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error getting filter options: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/analytics/ttl-info")
-async def get_ttl_info(sessionId: str):
-    """Get TTL information for shipping data and analytics"""
-    try:
-        if not sessionId:
-            raise HTTPException(status_code=400, detail="Session ID is required")
-        
-        # Get shipping data TTL
-        shipping_ttl = get_shipping_data_ttl(sessionId)
-        shipping_expires_at = None
-        if shipping_ttl > 0:
-            from datetime import datetime, timedelta
-            shipping_expires_at = (datetime.now() + timedelta(seconds=shipping_ttl)).isoformat()
-        
-        # Get analytics TTLs
-        analytics_types = [
-            'weekly-summary', 'ndr-weekly', 'state-performance',
-            'category-share', 'cancellation-tracker', 'channel-share',
-            'payment-method', 'product-analysis'
-        ]
-        
-        analytics_ttls = {}
-        for analytics_type in analytics_types:
-            key = build_analytics_key(sessionId, analytics_type, None)
-            ttl = get_key_ttl(key)
-            expires_at = None
-            if ttl > 0:
-                from datetime import datetime, timedelta
-                expires_at = (datetime.now() + timedelta(seconds=ttl)).isoformat()
-            analytics_ttls[analytics_type] = {
-                "ttl": ttl,
-                "expiresAt": expires_at
-            }
-        
-        return {
-            "shipping": {
-                "ttl": shipping_ttl,
-                "expiresAt": shipping_expires_at
-            },
-            "analytics": analytics_ttls
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error getting TTL info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -438,10 +256,13 @@ async def get_raw_shipping(
         if not sessionId:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        # Get data from Redis
-        data = get_shipping_data_from_redis(sessionId)
+        # Get data from in-memory store
+        data = get_shipping_data(sessionId)
         if not data or len(data) == 0:
-            raise HTTPException(status_code=404, detail="No data found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No data found for session {sessionId}. The server may have restarted. Please read the shipping file again."
+            )
         
         # Build filters dict
         filters = {}
@@ -464,9 +285,23 @@ async def get_raw_shipping(
         if filters:
             df = pd.DataFrame(data)
             filtered_df = filter_shipping_data(df, filters)
+            # Replace NaN values with None for JSON serialization
+            filtered_df = filtered_df.where(pd.notna(filtered_df), None)
             filtered_data = filtered_df.to_dict('records')
         else:
             filtered_data = data
+        
+        # Clean NaN values in filtered_data for JSON serialization
+        def clean_nan(obj):
+            if isinstance(obj, dict):
+                return {k: clean_nan(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_nan(item) for item in obj]
+            elif isinstance(obj, float) and (pd.isna(obj) or obj != obj):  # NaN check
+                return None
+            return obj
+        
+        filtered_data = clean_nan(filtered_data)
         
         # Apply pagination if limit is provided
         if limit:
@@ -494,6 +329,510 @@ async def get_raw_shipping(
     except Exception as e:
         print(f"Error getting raw shipping data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/{analytics_type}")
+async def get_analytics(
+    analytics_type: str, 
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """
+    GET /api/analytics/{analytics_type}?sessionId=xxx&filters=xxx
+    Get computed analytics from stored data
+    Supports filters as JSON string or individual query parameters
+    """
+    try:
+        if not sessionId:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        # Parse filters if provided as JSON string
+        filter_dict = None
+        if filters:
+            import json
+            try:
+                filter_dict = json.loads(filters)
+            except json.JSONDecodeError:
+                filter_dict = None
+        
+        # If no filters JSON string, build filter_dict from individual query parameters
+        if not filter_dict:
+            filter_dict = {}
+            if startDate:
+                filter_dict['startDate'] = startDate
+            if endDate:
+                filter_dict['endDate'] = endDate
+            if orderStatus and orderStatus != 'All':
+                filter_dict['orderStatus'] = orderStatus
+            if paymentMethod and paymentMethod != 'All':
+                filter_dict['paymentMethod'] = paymentMethod
+            if channel and channel != 'All':
+                filter_dict['channel'] = channel
+            if sku:
+                filter_dict['sku'] = sku if isinstance(sku, list) else [sku]
+            if productName:
+                filter_dict['productName'] = productName if isinstance(productName, list) else [productName]
+            
+            # Only set filter_dict if it has any filters
+            if not filter_dict:
+                filter_dict = None
+        
+        # Get data from in-memory store
+        data = get_shipping_data(sessionId)
+        if not data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
+            )
+        
+        # Check if it's a special endpoint that has its own route
+        if analytics_type in ['filter-options', 'raw-shipping']:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Use the dedicated endpoint for '{analytics_type}': /api/analytics/{analytics_type}"
+            )
+        
+        # Compute analytics on-demand
+        print(f"Computing analytics '{analytics_type}' for session {sessionId}...")
+        computed_data = compute_single_analytics(data, analytics_type, filter_dict)
+        
+        if computed_data is None:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Analytics type '{analytics_type}' is not supported or could not be computed"
+            )
+        
+        return computed_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting analytics: {e}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/weekly-summary")
+async def get_weekly_summary(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get weekly summary analytics"""
+    return await get_analytics(
+        "weekly-summary", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/ndr-weekly")
+async def get_ndr_weekly(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get NDR weekly analytics"""
+    return await get_analytics(
+        "ndr-weekly", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/state-performance")
+async def get_state_performance(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get state performance analytics"""
+    return await get_analytics(
+        "state-performance", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/category-share")
+async def get_category_share(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get category share analytics"""
+    return await get_analytics(
+        "category-share", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/cancellation-tracker")
+async def get_cancellation_tracker(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get cancellation tracker analytics"""
+    return await get_analytics(
+        "cancellation-tracker", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/channel-share")
+async def get_channel_share(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get channel share analytics"""
+    return await get_analytics(
+        "channel-share", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/payment-method")
+async def get_payment_method(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get payment method analytics"""
+    return await get_analytics(
+        "payment-method", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/product-analysis")
+async def get_product_analysis(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get product analysis analytics"""
+    return await get_analytics(
+        "product-analysis", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/sku-analysis")
+async def get_sku_analysis(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get SKU analysis analytics"""
+    return await get_analytics(
+        "sku-analysis", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/summary-metrics")
+async def get_summary_metrics(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get summary metrics analytics"""
+    return await get_analytics(
+        "summary-metrics", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/order-statuses")
+async def get_order_statuses(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get order statuses analytics"""
+    return await get_analytics(
+        "order-statuses", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/order-status-filter")
+async def get_order_status_filter(sessionId: str):
+    """Get unique order statuses for filter dropdown from dataframe"""
+    try:
+        if not sessionId:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        # Get data from in-memory store
+        data = get_shipping_data(sessionId)
+        if not data or len(data) == 0:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
+            )
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(data)
+        
+        if df.empty:
+            raise HTTPException(status_code=404, detail="No data found in dataframe")
+        
+        # Extract unique order statuses from multiple possible columns
+        statuses = set()
+        status_cols = ['delivery_status', 'status', 'original_status', 'current_status']
+        
+        for col in status_cols:
+            if col in df.columns:
+                # Get unique values, convert to string, strip whitespace, and filter out invalid values
+                unique_statuses = df[col].dropna().astype(str).str.strip().str.upper()
+                valid_statuses = unique_statuses[
+                    ~unique_statuses.isin(['NONE', 'N/A', 'NA', 'NULL', 'UNDEFINED', '', "'", 'NAN'])
+                ]
+                statuses.update(valid_statuses.unique())
+        
+        # Convert to sorted list
+        status_list = sorted(list(statuses))
+        
+        return {
+            "success": True,
+            "statuses": status_list,
+            "count": len(status_list)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting order status filter: {e}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/payment-method-outcome")
+async def get_payment_method_outcome(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get payment method outcome analytics"""
+    return await get_analytics(
+        "payment-method-outcome", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/ndr-count")
+async def get_ndr_count(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get NDR count analytics"""
+    return await get_analytics(
+        "ndr-count", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/address-type-share")
+async def get_address_type_share(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get address type share analytics"""
+    return await get_analytics(
+        "address-type-share", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/average-order-tat")
+async def get_average_order_tat(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get average order TAT analytics"""
+    return await get_analytics(
+        "average-order-tat", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/fad-del-can-rto")
+async def get_fad_del_can_rto(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get FAD/DEL/CAN/RTO analytics"""
+    return await get_analytics(
+        "fad-del-can-rto", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/cancellation-reason-tracker")
+async def get_cancellation_reason_tracker(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get cancellation reason tracker analytics"""
+    return await get_analytics(
+        "cancellation-reason-tracker", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/analytics/delivery-partner-analysis")
+async def get_delivery_partner_analysis(
+    sessionId: str, 
+    filters: Optional[str] = None,
+    startDate: Optional[str] = None,
+    endDate: Optional[str] = None,
+    orderStatus: Optional[str] = None,
+    paymentMethod: Optional[str] = None,
+    channel: Optional[str] = None,
+    sku: Optional[List[str]] = None,
+    productName: Optional[List[str]] = None
+):
+    """Get delivery partner analysis analytics"""
+    return await get_analytics(
+        "delivery-partner-analysis", sessionId, filters,
+        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
+    )
+
+
+@app.get("/api/stats/session")
+async def get_session_stats(sessionId: str):
+    """Get session statistics"""
+    try:
+        if not sessionId:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        return {
+            "sessionId": sessionId,
+            "message": "Session stats endpoint - Redis removed, data must be provided directly"
+        }
+    except Exception as e:
+        print(f"Error getting stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/session/generate")
+async def generate_session():
+    """Generate a new session ID"""
+    session_id = f"session_{uuid.uuid4().hex[:16]}"
+    return {"sessionId": session_id}
 
 
 

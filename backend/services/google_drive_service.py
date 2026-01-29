@@ -99,10 +99,16 @@ class GoogleDriveService:
     def list_excel_files(self, folder_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         List all Excel files from Google Drive
+        
+        Args:
+            folder_id: Optional folder ID to limit search. If None, searches all accessible files.
+        
+        Returns:
+            List of file dictionaries with id, name, mimeType, modifiedTime
         """
         service = self.get_service()
         
-        # Build query
+        # Build query for Excel/CSV files
         query = (
             "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' "
             "or mimeType='application/vnd.ms-excel' "
@@ -123,15 +129,53 @@ class GoogleDriveService:
             
             if is_valid:
                 query += f" and '{target_folder_id}' in parents"
+                print(f"[Google Drive] Searching for Excel files in folder: {target_folder_id}")
+            else:
+                print(f"[Google Drive] Invalid folder ID placeholder detected, searching all files")
+        else:
+            print(f"[Google Drive] No folder ID specified, searching all accessible Excel files")
         
-        # List files
-        results = service.files().list(
-            q=query,
-            fields="files(id, name, mimeType, modifiedTime)",
-            orderBy="modifiedTime desc"
-        ).execute()
-        
-        return results.get('files', [])
+        try:
+            # List files
+            results = service.files().list(
+                q=query,
+                fields="files(id, name, mimeType, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=100  # Increase page size to get more results
+            ).execute()
+            
+            files = results.get('files', [])
+            print(f"[Google Drive] Found {len(files)} Excel/CSV file(s)")
+            
+            # If no files found and folder_id is set, try searching without folder restriction
+            if len(files) == 0 and target_folder_id and is_valid:
+                print(f"[Google Drive] No files found in folder {target_folder_id}, trying to search all files...")
+                # Try without folder restriction
+                query_all = (
+                    "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' "
+                    "or mimeType='application/vnd.ms-excel' "
+                    "or mimeType='text/csv'"
+                )
+                results_all = service.files().list(
+                    q=query_all,
+                    fields="files(id, name, mimeType, modifiedTime)",
+                    orderBy="modifiedTime desc",
+                    pageSize=100
+                ).execute()
+                files_all = results_all.get('files', [])
+                print(f"[Google Drive] Found {len(files_all)} Excel/CSV file(s) in all accessible locations")
+                
+                if len(files_all) > 0:
+                    print(f"[Google Drive] Warning: Files exist but not in specified folder. Check folder ID or permissions.")
+                    # Return empty list to indicate folder-specific search failed
+                    # User can try without folder_id parameter
+                    return []
+            
+            return files
+            
+        except Exception as e:
+            print(f"[Google Drive] Error listing files: {e}")
+            raise
     
     def read_excel_file(self, file_id: str) -> Dict[str, Any]:
         """
@@ -175,7 +219,9 @@ class GoogleDriveService:
         
         # Parse file
         if file_type == 'csv':
-            df = pd.read_csv(file_content)
+            # Use low_memory=False to avoid DtypeWarning for mixed types
+            # This reads the entire file into memory for accurate type inference
+            df = pd.read_csv(file_content, low_memory=False)
         elif file_type == 'xls':
             df = pd.read_excel(file_content, engine='xlrd')
         else:

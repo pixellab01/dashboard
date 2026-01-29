@@ -1,9 +1,24 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import { useRouter } from 'next/navigation'
-import Scene3D from './components/Scene3D'
+import dynamic from 'next/dynamic'
 import { motion } from 'framer-motion'
+import ErrorBoundary from './components/ErrorBoundary'
+
+// Dynamically import Scene3D with SSR disabled to avoid React errors
+// Add error handling to prevent crashes
+const Scene3D = dynamic(
+  () => import('./components/Scene3D').catch((error) => {
+    console.error('Failed to load Scene3D component:', error)
+    // Return a null component if loading fails
+    return { default: () => null }
+  }),
+  {
+    ssr: false,
+    loading: () => null,
+  }
+)
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -51,7 +66,11 @@ export default function LoginPage() {
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gradient-to-br from-slate-900 via-gray-900 to-slate-900" style={{ overflow: 'hidden' }}>
       {/* 3D Background Scene */}
-      <Scene3D />
+      <ErrorBoundary fallback={null}>
+        <Suspense fallback={null}>
+          <Scene3D />
+        </Suspense>
+      </ErrorBoundary>
       
       {/* Overlay gradient for better text readability */}
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/20 to-black/60" />

@@ -3,12 +3,13 @@ Configuration settings for the backend
 """
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
-
-# Redis Configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-REDIS_TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "1800"))  # 30 minutes
+# Load .env.local first (if exists), then .env
+env_path = Path(__file__).parent.parent / '.env.local'
+if env_path.exists():
+    load_dotenv(env_path)
+load_dotenv()  # Also load .env if it exists
 
 # MongoDB Configuration
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")

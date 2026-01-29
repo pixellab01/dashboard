@@ -4,6 +4,7 @@ MongoDB connection utility
 from pymongo import MongoClient
 from typing import Optional
 import os
+import certifi
 from backend.config import MONGODB_URI
 
 # Global MongoDB client instance
@@ -21,7 +22,13 @@ def get_mongodb_client() -> MongoClient:
         if not MONGODB_URI:
             raise ValueError("MONGODB_URI not found in environment variables")
         
-        _client = MongoClient(MONGODB_URI)
+        # Configure MongoDB client with SSL certificate support
+        # Use certifi for SSL certificate verification (fixes macOS SSL issues)
+        _client = MongoClient(
+            MONGODB_URI,
+            tlsCAFile=certifi.where(),
+            tlsAllowInvalidCertificates=False
+        )
         # Test connection
         try:
             _client.admin.command('ping')

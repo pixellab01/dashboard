@@ -12,6 +12,8 @@ import re
 def normalize_keys(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize column names to snake_case"""
     def to_snake_case(name: str) -> str:
+        # Strip whitespace first
+        name = str(name).strip()
         # Convert to snake_case
         name = re.sub(r'(?<!^)(?=[A-Z])', '_', name)
         name = name.lower()
@@ -312,30 +314,44 @@ def preprocess_shipping_data(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
         df[col] = df[col].apply(standardize_missing_values)
     
-    # Date field mappings
+    # Date field mappings - updated to match CSV column structure
+    # Note: After normalization, "Shiprocket Created At" becomes "shiprocket__created__at" (double underscores)
     date_fields = {
-        'order_date': ['shiprocket_created_at', 'order_date', 'order_placed_date', 'created_at', 'channel_created_at'],
-        'pickup_date': ['order_picked_up_date', 'pickedup_timestamp', 'pickup_date', 'pickup_datetime'],
-        'ofd_date': ['first_out_for_delivery_date', 'latest_o_f_d__date', 'ofd_date', 'ofd_datetime', 'out_for_delivery_date'],
-        'delivery_date': ['order_delivered_date', 'delivery_date', 'delivered_date', 'delivered_datetime'],
-        'ndr_date': ['latest_n_d_r__date', 'n_d_r_1__attempt__date', 'ndr_date', 'ndr_datetime'],
-        'rto_date': ['r_t_o__initiated__date', 'r_t_o__delivered__date', 'rto_date', 'rto_datetime'],
+        'order_date': ['shiprocket__created__at', 'shiprocket_created_at', 'channel__created__at', 'channel_created_at', 'order_date', 'order_placed_date', 'created_at'],
+        'pickup_date': ['order__picked__up__date', 'order_picked_up_date', 'pickedup__timestamp', 'pickedup_timestamp', 'pickup_date', 'pickup_datetime', 'pickup__first__attempt__date', 'pickup_first_attempt_date'],
+        'ofd_date': ['first__out__for__delivery__date', 'first_out_for_delivery_date', 'latest__o_f_d__date', 'latest_o_f_d__date', 'latest_ofd_date', 'ofd_date', 'ofd_datetime', 'out_for_delivery_date'],
+        'delivery_date': ['order__delivered__date', 'order_delivered_date', 'delivery_date', 'delivered_date', 'delivered_datetime'],
+        'ndr_date': ['latest__n_d_r__date', 'latest_n_d_r__date', 'latest_ndr_date', 'n_d_r_1__attempt__date', 'ndr_1_attempt_date', 'ndr_2_attempt_date', 'ndr_3_attempt_date', 'ndr_date', 'ndr_datetime'],
+        'rto_date': ['r_t_o__initiated__date', 'r_t_o__delivered__date', 'rto_initiated_date', 'rto_delivered_date', 'rto_date', 'rto_datetime'],
     }
     
-    # Parse dates
+    # Parse dates - batch all operations to avoid fragmentation
     parsed_dates = {}
+    parsed_date_cols = {}  # Store parsed datetime columns
+    date_string_cols = {}
     for target_field, source_fields in date_fields.items():
         for source_field in source_fields:
             if source_field in df.columns:
-                # Parse dates and store as datetime objects
-                df[source_field + '_parsed'] = df[source_field].apply(parse_date)
-                if df[source_field + '_parsed'].notna().any():
+                # Parse dates and store temporarily
+                parsed_col = df[source_field].apply(parse_date)
+                if parsed_col.notna().any():
                     parsed_dates[target_field] = source_field + '_parsed'
-                    # Also store as ISO date string (YYYY-MM-DD)
-                    df[target_field] = df[source_field + '_parsed'].apply(
+                    parsed_date_cols[source_field + '_parsed'] = parsed_col
+                    # Collect ISO date strings to add in batch
+                    date_string_cols[target_field] = parsed_col.apply(
                         lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) and x is not None else None
                     )
                     break
+    
+    # Add all parsed date columns at once to avoid fragmentation
+    if parsed_date_cols:
+        parsed_date_df = pd.DataFrame(parsed_date_cols, index=df.index)
+        df = pd.concat([df, parsed_date_df], axis=1)
+    
+    # Add all date string columns at once
+    if date_string_cols:
+        date_df = pd.DataFrame(date_string_cols, index=df.index)
+        df = pd.concat([df, date_df], axis=1)
     
     # Number field mappings
     number_fields = {
@@ -354,158 +370,225 @@ def preprocess_shipping_data(df: pd.DataFrame) -> pd.DataFrame:
                     break
     
     # Parse booleans
+    # Note: Updating existing columns is less problematic than adding new ones
     boolean_fields = ['ndr', 'rto', 'cancelled', 'canceled', 'address_verified', 'is_verified']
     for field in boolean_fields:
         if field in df.columns:
             df[field] = df[field].apply(parse_boolean)
     
+    # Batch field mappings to avoid fragmentation
+    field_mappings = {}
+    
     # Map category field
     category_fields = ['product_category', 'category']
+    category_mapped = False
     for field in category_fields:
         if field in df.columns:
-            df['category'] = df[field]
+            field_mappings['category'] = df[field]
+            category_mapped = True
             break
-    if 'category' not in df.columns or df['category'].isna().all():
-        df['category'] = 'Uncategorized'
-    df['category'] = df['category'].fillna('Uncategorized')
-    df.loc[df['category'].isin(['none', 'N/A', '', None]), 'category'] = 'Uncategorized'
+    if not category_mapped or ('category' in df.columns and df['category'].isna().all()):
+        field_mappings['category'] = 'Uncategorized'
     
     # Map channel field
     channel_fields = ['channel', 'channel__']
+    channel_mapped = False
     for field in channel_fields:
         if field in df.columns:
-            df['channel'] = df[field]
+            field_mappings['channel'] = df[field]
+            channel_mapped = True
             break
-    if 'channel' not in df.columns:
-        df['channel'] = None
+    if not channel_mapped:
+        field_mappings['channel'] = None
     
     # Map state field
     state_fields = ['address_state', 'state']
     for field in state_fields:
         if field in df.columns:
-            df['state'] = df[field]
+            field_mappings['state'] = df[field]
             break
     
-    # Map SKU, Product Name, Payment Method
+    # Map address fields (for address quality calculation)
+    address_line1_fields = ['address_line_1', 'address_line1']
+    for field in address_line1_fields:
+        if field in df.columns:
+            field_mappings['address_line_1'] = df[field]
+            break
+    
+    address_line2_fields = ['address_line_2', 'address_line2']
+    for field in address_line2_fields:
+        if field in df.columns:
+            field_mappings['address_line_2'] = df[field]
+            break
+    
+    city_fields = ['address_city', 'city']
+    for field in city_fields:
+        if field in df.columns:
+            field_mappings['city'] = df[field]
+            break
+    
+    pincode_fields = ['address_pincode', 'pincode']
+    for field in pincode_fields:
+        if field in df.columns:
+            field_mappings['pincode'] = df[field]
+            break
+    
+    # Map SKU
     sku_fields = ['master_s_k_u', 'channel_s_k_u', 'sku']
     for field in sku_fields:
         if field in df.columns:
-            df['sku'] = df[field]
+            field_mappings['sku'] = df[field]
             break
     
+    # Map product name
     product_name_fields = ['product_name', 'product__name']
     for field in product_name_fields:
         if field in df.columns:
-            df['product_name'] = df[field]
+            field_mappings['product_name'] = df[field]
             break
     
+    # Map payment method
     payment_method_fields = ['payment_method', 'payment__method']
     for field in payment_method_fields:
         if field in df.columns:
-            df['payment_method'] = df[field]
+            field_mappings['payment_method'] = df[field]
             break
     
     # Preserve original status
     if 'status' in df.columns:
-        df['original_status'] = df['status']
+        field_mappings['original_status'] = df['status']
     
-    # Derived fields
+    # Add all field mappings at once
+    if field_mappings:
+        mapping_df = pd.DataFrame(field_mappings, index=df.index)
+        df = pd.concat([df, mapping_df], axis=1)
+    
+    # Clean up category field (needs to be done after adding to df)
+    if 'category' in df.columns:
+        df['category'] = df['category'].fillna('Uncategorized')
+        df.loc[df['category'].isin(['none', 'N/A', '', None]), 'category'] = 'Uncategorized'
+    
+    # Batch derived fields to avoid fragmentation
+    derived_fields = {}
+    
+    # Order week
     order_date_col = parsed_dates.get('order_date')
     if order_date_col:
-        df['order_week'] = df[order_date_col].apply(get_order_week)
+        derived_fields['order_week'] = df[order_date_col].apply(get_order_week)
     else:
-        df['order_week'] = None
+        derived_fields['order_week'] = None
     
-    # Set flags based on data fields
-    status_col = df.get('status', pd.Series(dtype=str))
-    df['status_upper'] = status_col.astype(str).str.upper()
+    # Status upper (needed for cancelled_flag)
+    status_col = df.get('status', pd.Series(dtype=str, index=df.index))
+    derived_fields['status_upper'] = status_col.astype(str).str.upper()
+    
+    # Add order_week and status_upper first since cancelled_flag depends on status_upper
+    if derived_fields:
+        first_batch = {k: derived_fields.pop(k) for k in ['order_week', 'status_upper'] if k in derived_fields}
+        if first_batch:
+            first_df = pd.DataFrame(first_batch, index=df.index)
+            df = pd.concat([df, first_df], axis=1)
     
     # NDR flag
     ndr_date_col = parsed_dates.get('ndr_date')
     if ndr_date_col:
-        df['ndr_flag'] = df[ndr_date_col].notna()
+        derived_fields['ndr_flag'] = df[ndr_date_col].notna()
     else:
-        df['ndr_flag'] = False
+        derived_fields['ndr_flag'] = False
     
     # RTO flag
     rto_date_col = parsed_dates.get('rto_date')
     if rto_date_col:
-        df['rto_flag'] = df[rto_date_col].notna()
+        derived_fields['rto_flag'] = df[rto_date_col].notna()
     else:
-        df['rto_flag'] = False
+        derived_fields['rto_flag'] = False
     
-    # Cancelled flag
+    # Cancelled flag (depends on status_upper which is now in df)
     cancellation_reason_fields = ['cancellation_reason', 'cancellation__reason']
     has_cancellation = False
     for field in cancellation_reason_fields:
         if field in df.columns:
-            df['cancelled_flag'] = (
+            derived_fields['cancelled_flag'] = (
                 df['status_upper'].str.contains('CANCEL', na=False) |
                 (df[field].notna() & ~df[field].isin(['none', 'N/A', None, '']))
             )
             has_cancellation = True
             break
     if not has_cancellation:
-        df['cancelled_flag'] = df['status_upper'].str.contains('CANCEL', na=False)
+        derived_fields['cancelled_flag'] = df['status_upper'].str.contains('CANCEL', na=False)
     
     # Delivery status
-    df['delivery_status'] = df.apply(get_delivery_status, axis=1)
+    derived_fields['delivery_status'] = df.apply(get_delivery_status, axis=1)
     
     # Address quality
-    df['address_quality'] = df.apply(get_address_quality, axis=1)
+    derived_fields['address_quality'] = df.apply(get_address_quality, axis=1)
     
-    # Calculate TAT metrics
+    # Add all derived fields at once
+    if derived_fields:
+        derived_df = pd.DataFrame(derived_fields, index=df.index)
+        df = pd.concat([df, derived_df], axis=1)
+    
+    # Calculate TAT metrics and collect new columns to avoid DataFrame fragmentation
     order_date_dt = parsed_dates.get('order_date')
     pickup_date_dt = parsed_dates.get('pickup_date')
     ofd_date_dt = parsed_dates.get('ofd_date')
     delivery_date_dt = parsed_dates.get('delivery_date')
     
+    # Collect all new columns in a dictionary to add at once
+    new_columns = {}
+    
+    # Calculate TAT metrics
     if order_date_dt and pickup_date_dt:
-        df['order_to_pickup_tat'] = df.apply(
+        new_columns['order_to_pickup_tat'] = df.apply(
             lambda row: calculate_tat(
                 row.get(order_date_dt),
                 row.get(pickup_date_dt)
             ), axis=1
         )
     else:
-        df['order_to_pickup_tat'] = None
+        new_columns['order_to_pickup_tat'] = None
     
     if pickup_date_dt and ofd_date_dt:
-        df['pickup_to_ofd_tat'] = df.apply(
+        new_columns['pickup_to_ofd_tat'] = df.apply(
             lambda row: calculate_tat(
                 row.get(pickup_date_dt),
                 row.get(ofd_date_dt)
             ), axis=1
         )
     else:
-        df['pickup_to_ofd_tat'] = None
+        new_columns['pickup_to_ofd_tat'] = None
     
     if ofd_date_dt and delivery_date_dt:
-        df['ofd_to_delivery_tat'] = df.apply(
+        new_columns['ofd_to_delivery_tat'] = df.apply(
             lambda row: calculate_tat(
                 row.get(ofd_date_dt),
                 row.get(delivery_date_dt)
             ), axis=1
         )
     else:
-        df['ofd_to_delivery_tat'] = None
+        new_columns['ofd_to_delivery_tat'] = None
     
     if order_date_dt and delivery_date_dt:
-        df['total_tat'] = df.apply(
+        new_columns['total_tat'] = df.apply(
             lambda row: calculate_tat(
                 row.get(order_date_dt),
                 row.get(delivery_date_dt)
             ), axis=1
         )
     else:
-        df['total_tat'] = None
+        new_columns['total_tat'] = None
     
     # Order risk score
     if 'order_risk_score' not in df.columns:
-        df['order_risk_score'] = 0
+        new_columns['order_risk_score'] = 0
     
     # Add processed timestamp
-    df['processed_at'] = datetime.now()
+    new_columns['processed_at'] = datetime.now()
+    
+    # Add all new columns at once using pd.concat to avoid fragmentation
+    if new_columns:
+        new_df = pd.DataFrame(new_columns, index=df.index)
+        df = pd.concat([df, new_df], axis=1)
     
     # Clean up temporary columns
     temp_cols = [col for col in df.columns if col.endswith('_parsed') or col == 'status_upper']

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 Example usage of the Python Analytics Backend
+Note: Redis has been removed. Data must be provided directly to analytics functions.
 """
 import requests
 import json
-from backend.data_loader import load_data_from_json, generate_session_id
-from backend.redis_client import save_shipping_data_to_redis
+from backend.data_loader import load_data_from_json
 
 
 def example_compute_analytics():
@@ -35,10 +35,11 @@ def example_compute_analytics():
         },
     ]
     
-    # Load data to Redis
-    print("Loading data to Redis...")
-    session_id = load_data_from_json(sample_data)
+    # Load and preprocess data
+    print("Loading and preprocessing data...")
+    session_id, processed_data = load_data_from_json(sample_data)
     print(f"Session ID: {session_id}")
+    print(f"Processed {len(processed_data)} records")
     
     # Compute analytics
     print("\nComputing analytics...")
@@ -77,9 +78,9 @@ def example_with_filters():
     """Example: Compute analytics with filters"""
     
     # Load your data first
-    session_id = generate_session_id()
+    # session_id, processed_data = load_data_from_json(your_data)
     
-    # ... load your data here ...
+    # Note: You'll need to provide the data directly to the analytics endpoints
     
     # Compute with filters
     response = requests.post(

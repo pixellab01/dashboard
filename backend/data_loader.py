@@ -1,22 +1,24 @@
 """
 Data Loading Utilities
-Helper functions to load data from various sources and save to Redis
+Helper functions to load data from various sources
+Note: Redis has been removed. These functions now return processed data directly.
 """
 import pandas as pd
 from typing import List, Dict, Any, Optional
 import json
+import uuid
 
-from backend.redis_client import save_shipping_data_to_redis, generate_session_id
 from backend.data_preprocessing import preprocess_shipping_data
 
 
-def load_data_from_json(data: List[Dict[str, Any]], session_id: Optional[str] = None) -> str:
+def load_data_from_json(data: List[Dict[str, Any]], session_id: Optional[str] = None) -> tuple:
     """
-    Load data from JSON list and save to Redis
-    Returns session_id
+    Load data from JSON list and preprocess it
+    Returns (session_id, processed_data)
+    Note: Redis has been removed. Data is returned directly.
     """
     if session_id is None:
-        session_id = generate_session_id()
+        session_id = f"session_{uuid.uuid4().hex[:16]}"
     
     # Convert to DataFrame
     df = pd.DataFrame(data)
@@ -27,19 +29,17 @@ def load_data_from_json(data: List[Dict[str, Any]], session_id: Optional[str] = 
     # Convert back to list of dicts
     data_list = df.to_dict('records')
     
-    # Save to Redis
-    save_shipping_data_to_redis(data_list, session_id)
-    
-    return session_id
+    return session_id, data_list
 
 
-def load_data_from_dataframe(df: pd.DataFrame, session_id: Optional[str] = None) -> str:
+def load_data_from_dataframe(df: pd.DataFrame, session_id: Optional[str] = None) -> tuple:
     """
-    Load data from pandas DataFrame and save to Redis
-    Returns session_id
+    Load data from pandas DataFrame and preprocess it
+    Returns (session_id, processed_data)
+    Note: Redis has been removed. Data is returned directly.
     """
     if session_id is None:
-        session_id = generate_session_id()
+        session_id = f"session_{uuid.uuid4().hex[:16]}"
     
     # Preprocess data
     df = preprocess_shipping_data(df)
@@ -47,19 +47,17 @@ def load_data_from_dataframe(df: pd.DataFrame, session_id: Optional[str] = None)
     # Convert to list of dicts
     data_list = df.to_dict('records')
     
-    # Save to Redis
-    save_shipping_data_to_redis(data_list, session_id)
-    
-    return session_id
+    return session_id, data_list
 
 
-def load_data_from_file(file_path: str, session_id: Optional[str] = None) -> str:
+def load_data_from_file(file_path: str, session_id: Optional[str] = None) -> tuple:
     """
-    Load data from file (CSV, Excel, JSON) and save to Redis
-    Returns session_id
+    Load data from file (CSV, Excel, JSON) and preprocess it
+    Returns (session_id, processed_data)
+    Note: Redis has been removed. Data is returned directly.
     """
     if session_id is None:
-        session_id = generate_session_id()
+        session_id = f"session_{uuid.uuid4().hex[:16]}"
     
     # Read file based on extension
     if file_path.endswith('.csv'):

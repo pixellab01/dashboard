@@ -182,37 +182,6 @@ export async function isSessionValid(sessionId: string): Promise<boolean> {
   return ttl > 0
 }
 
-/**
- * Get TTL info for session and analytics (for UI display)
- */
-export async function getSessionTTLInfo(sessionId: string): Promise<{
-  shipping: { ttl: number; expiresAt: string | null }
-  analytics: { [key: string]: { ttl: number; expiresAt: string | null } }
-}> {
-  const client = getRedisClient()
-  const keys = await client.keys(`analytics:*:${sessionId}`)
-  
-  const shippingTTL = await getShippingDataTTL(sessionId)
-  const analyticsTTL: { [key: string]: { ttl: number; expiresAt: string | null } } = {}
-  
-  for (const key of keys) {
-    const ttl = await getKeyTTL(key)
-    const analyticsType = key.split(':')[1]
-    
-    analyticsTTL[analyticsType] = {
-      ttl,
-      expiresAt: ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : null,
-    }
-  }
-  
-  return {
-    shipping: {
-      ttl: shippingTTL,
-      expiresAt: shippingTTL > 0 ? new Date(Date.now() + shippingTTL * 1000).toISOString() : null,
-    },
-    analytics: analyticsTTL,
-  }
-}
 
 /**
  * Check if source data exists - if not, analytics are invalid

@@ -1,12 +1,8 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # Dependencies
 node_modules/
 /.pnp
 .pnp.js
-package-lock.json
-yarn.lock
-.next/
+# Note: package-lock.json should be committed for consistent installs
 
 # Python
 __pycache__/
@@ -14,33 +10,53 @@ __pycache__/
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
-*.egg-info/
-dist/
-build/
-*.egg
+.venv/
+
+# Python Testing
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 .tox/
+.nox/
+.hypothesis/
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Testing
-/coverage
-.coverage.*
-.pytest_cache/
-htmlcov/
+.pytype/
+.pyre/
+.pytype/
 
 # Next.js
+.next/
+**/.next/
+frontend/.next/
 /.next/
 /out/
-.next/
 out/
 
 # Production
@@ -48,17 +64,23 @@ out/
 dist/
 build/
 
-# Misc
-.DS_Store
-*.pem
-*.log
-*.swp
-*.swo
-*~
-.vscode/
-.idea/
-*.sublime-project
-*.sublime-workspace
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Environment Variables
+.env
+.env*.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+.env.production
+
+# Vercel
+.vercel
 
 # Debug
 npm-debug.log*
@@ -67,22 +89,78 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Local env files
-.env
-.env*.local
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Vercel
-.vercel
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
-# TypeScript
-*.tsbuildinfo
-next-env.d.ts
+# IDE - VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
 
-# CSV and Excel files
+# IDE - JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDE - Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# IDE - Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# IDE - Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Temporary Files
+*.tmp
+*.temp
+.cache/
+*.bak
+*.backup
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Redis
+dump.rdb
+*.rdb
+
+# Data Files (CSV, Excel, etc.)
 *.csv
 *.xlsx
 *.xls
@@ -93,37 +171,27 @@ next-env.d.ts
 *.xlt
 *.xml
 *.xlam
+*.ods
 
-# OS specific
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-Desktop.ini
+# Security & Secrets
+*.pem
+*.key
+*.cert
+*.crt
+secrets/
+.secrets
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.sublime-*
+# Google Drive API
+credentials.json
+token.json
+*.json.bak
 
-# Temporary files
-*.tmp
-*.temp
+# MongoDB
+*.bson
+
+# Misc
+*.zip
+*.tar.gz
+*.rar
 .cache/
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
-# Redis
-dump.rdb
-
-# Logs
-logs/
-*.log
+.parcel-cache/

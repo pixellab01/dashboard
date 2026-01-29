@@ -22,11 +22,8 @@ backend/
 ├── config.py              # Configuration settings
 ├── main.py                # FastAPI application entry point
 ├── analytics.py           # Analytics computation logic
-├── rq_queue.py           # Job queue management
-├── redis_client.py        # Redis client utilities
 ├── data_loader.py         # Data loading utilities
-├── data_preprocessing.py  # Data preprocessing functions
-└── worker.py              # Background worker for analytics
+└── data_preprocessing.py  # Data preprocessing functions
 ```
 
 ## API Endpoints
@@ -41,8 +38,7 @@ backend/
 - `POST /api/google-drive/read` - Read and parse Excel file from Google Drive
 
 ### Admin (`/api/admin`)
-- `GET /api/admin/queue` - Get queue statistics
-- `GET /api/admin/queue?sessionId=xxx` - Get specific job status
+- `GET /api/admin/queue` - Queue endpoints have been removed (Redis and RQ removed)
 
 ### Stats (`/api/stats`)
 - `GET /api/stats` - Get dashboard statistics
@@ -57,7 +53,6 @@ backend/
 All configuration is managed through environment variables loaded from `.env.local`:
 
 - `MONGODB_URI` - MongoDB connection string
-- `REDIS_URL` - Redis connection URL
 - `GOOGLE_DRIVE_CLIENT_ID` - Google Drive OAuth2 client ID
 - `GOOGLE_DRIVE_CLIENT_SECRET` - Google Drive OAuth2 client secret
 - `GOOGLE_DRIVE_REFRESH_TOKEN` - Google Drive refresh token
@@ -103,7 +98,10 @@ Key dependencies:
 - `fastapi` - Web framework
 - `uvicorn` - ASGI server
 - `pymongo` - MongoDB driver
-- `redis` - Redis client
 - `google-api-python-client` - Google Drive API
 - `pandas` - Data processing
 - `openpyxl` - Excel file handling
+
+## Note on Redis Removal
+
+Redis, RQ (job queue), and worker functionality have been completely removed from the backend. Analytics functions now accept data directly as parameters instead of loading from Redis. Endpoints that previously relied on Redis storage will need to be updated to accept data in request bodies.

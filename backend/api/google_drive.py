@@ -6,9 +6,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from backend.services.google_drive_service import get_google_drive_service
-from backend.redis_client import save_shipping_data_to_redis, generate_session_id
-from backend.rq_queue import enqueue_analytics_computation
-from backend.utils.preprocessing import preprocess_shipping_detail
+from backend.data_preprocessing import preprocess_shipping_data
+from backend.config import GOOGLE_DRIVE_FOLDER_ID
+from backend.data_store import store_shipping_data
+import pandas as pd
+import uuid
 
 router = APIRouter(prefix="/api/google-drive", tags=["google-drive"])
 
@@ -220,10 +222,39 @@ async def list_files(folderId: Optional[str] = Query(None)):
     """
     GET /api/google-drive/files
     List all Excel files from Google Drive
+    
+    Query Parameters:
+        folderId: Optional folder ID to limit search to a specific folder
     """
     try:
         service = get_google_drive_service()
         files = service.list_excel_files(folderId)
+        
+        # Provide helpful message if no files found
+        if len(files) == 0:
+            target_folder = folderId or GOOGLE_DRIVE_FOLDER_ID
+            if target_folder:
+                return {
+                    "success": True,
+                    "files": [],
+                    "message": f"No Excel files found in the specified folder (ID: {target_folder}). "
+                               f"Please check:\n"
+                               f"1. The folder ID is correct\n"
+                               f"2. The folder contains Excel (.xlsx, .xls) or CSV files\n"
+                               f"3. Your Google account has access to the folder\n"
+                               f"4. Try calling without folderId parameter to search all files",
+                    "folderId": target_folder
+                }
+            else:
+                return {
+                    "success": True,
+                    "files": [],
+                    "message": "No Excel files found in your Google Drive. "
+                               "Please ensure:\n"
+                               "1. You have Excel (.xlsx, .xls) or CSV files in your Drive\n"
+                               "2. Your Google account has proper permissions\n"
+                               "3. The files are not in Trash"
+                }
         
         return {
             "success": True,
@@ -269,7 +300,8 @@ async def list_files(folderId: Optional[str] = Query(None)):
 async def read_file(request: ReadFileRequest):
     """
     POST /api/google-drive/read
-    Read and parse Excel file from Google Drive and save to Redis
+    Read and parse Excel/CSV file from Google Drive directly with pandas
+    All preprocessing operations are performed on the DataFrame in one pass
     """
     try:
         if not request.fileId:
@@ -278,53 +310,139 @@ async def read_file(request: ReadFileRequest):
                 detail="File ID is required"
             )
         
-        # Only process shipping files
-        if request.sheetType != "shipping":
-            return {
-                "success": True,
-                "message": f"File parsed successfully ({request.sheetType} type - not saved to Redis)"
-            }
-        
-        # Read file from Google Drive
+        # Read file directly from Google Drive as pandas DataFrame
         service = get_google_drive_service()
-        file_data = service.read_excel_file(request.fileId)
+        file_metadata = service.get_service().files().get(
+            fileId=request.fileId, 
+            fields='id, name, mimeType'
+        ).execute()
+        file_name = file_metadata.get('name', 'file.xlsx')
+        mime_type = file_metadata.get('mimeType', '')
         
-        # Preprocess and normalize data
-        processed_data = [
-            preprocess_shipping_detail(row)
-            for row in file_data["data"]
-        ]
+        # Download file content
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+        request_media = service.get_service().files().get_media(fileId=request.fileId)
+        file_content = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_content, request_media)
+        
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        
+        file_content.seek(0)
+        
+        # Read directly as pandas DataFrame based on file type
+        original_rows = 0
+        if 'csv' in mime_type or file_name.endswith('.csv'):
+            # Read CSV directly with pandas
+            df = pd.read_csv(file_content, low_memory=False)
+            original_rows = len(df)
+        elif 'ms-excel' in mime_type or file_name.endswith('.xls'):
+            # Read XLS directly with pandas
+            df = pd.read_excel(file_content, engine='xlrd')
+            original_rows = len(df)
+        else:
+            # Read XLSX directly with pandas
+            df = pd.read_excel(file_content, engine='openpyxl')
+            original_rows = len(df)
+        
+        print(f"✅ Read {original_rows} rows from file '{file_name}' directly with pandas")
+        
+        # Remove duplicates before preprocessing (to get accurate count)
+        df_before_dedup = len(df)
+        df = df.drop_duplicates()
+        duplicates_removed = df_before_dedup - len(df)
+        
+        if duplicates_removed > 0:
+            print(f"✅ Removed {duplicates_removed} duplicate rows")
+        
+        # Process entire DataFrame using pandas operations in one pass
+        print(f"🔍 Processing DataFrame with {len(df)} rows...")
+        processed_df = preprocess_shipping_data(df)
+        
+        print(f"✅ Preprocessing complete. Processed DataFrame shape: {processed_df.shape}")
+        
+        # Handle duplicate column names (add suffix to duplicates)
+        if processed_df.columns.duplicated().any():
+            print(f"⚠️  Warning: Found duplicate column names, renaming duplicates...")
+            cols = pd.Series(processed_df.columns)
+            for dup in cols[cols.duplicated()].unique():
+                cols[cols[cols == dup].index.values.tolist()] = [
+                    dup + '_' + str(i) if i != 0 else dup 
+                    for i in range(sum(cols == dup))
+                ]
+            processed_df.columns = cols
+        
+        # Replace NaN/NaT values with None for JSON serialization
+        # This handles float NaN, which is not JSON compliant
+        import numpy as np
+        processed_df = processed_df.replace([np.nan, pd.NA, pd.NaT], None)
+        processed_df = processed_df.where(pd.notnull(processed_df), None)
+        
+        # Convert processed DataFrame to list of dicts for response
+        processed_data = processed_df.to_dict('records')
+        
+        # Additional cleanup: replace any remaining NaN/NaT values in the dict
+        def clean_dict_value(value):
+            if value is None:
+                return None
+            if pd.isna(value):
+                return None
+            if isinstance(value, float) and np.isnan(value):
+                return None
+            if isinstance(value, (pd.Timestamp, pd.DatetimeTZDtype)):
+                return value.isoformat() if pd.notna(value) else None
+            if isinstance(value, np.integer):
+                return int(value)
+            if isinstance(value, np.floating):
+                return float(value) if not np.isnan(value) else None
+            return value
+        
+        # Clean all values in the records
+        for record in processed_data:
+            for key, value in list(record.items()):
+                record[key] = clean_dict_value(value)
+        
+        # Get processed data statistics
+        processed_rows = len(processed_df)
+        processed_columns = len(processed_df.columns)
+        processed_headers = processed_df.columns.tolist()
         
         # Generate session ID
-        session_id = generate_session_id()
+        session_id = f"session_{uuid.uuid4().hex[:16]}"
         
-        # Save to Redis with 30 minute TTL
-        save_shipping_data_to_redis(processed_data, session_id)
-        
-        # Enqueue analytics computation job (non-blocking)
-        try:
-            job = enqueue_analytics_computation(session_id, 10)  # Priority 10
-            print(f"📋 Analytics computation job queued: {job.id if job else 'N/A'} for session {session_id}")
-        except Exception as e:
-            print(f"Error enqueueing analytics job: {e}")
-            # Don't fail the request - analytics will be computed on-demand if needed
+        # Store data in memory for analytics endpoints
+        metadata = {
+            "fileName": file_name,
+            "totalRows": processed_rows,
+            "originalRows": original_rows,
+            "duplicatesRemoved": duplicates_removed,
+            "headers": processed_headers,
+            "totalColumns": processed_columns,
+            "sheetType": request.sheetType or "shipping",
+        }
+        store_shipping_data(session_id, processed_data, metadata)
         
         return {
             "success": True,
-            "fileName": file_data["fileName"],
-            "totalRows": file_data["totalRows"],
-            "originalRows": file_data["originalRows"],
-            "duplicatesRemoved": file_data["duplicatesRemoved"],
-            "headers": file_data["headers"],
-            "totalColumns": len(file_data["headers"]),
+            "fileName": file_name,
+            "totalRows": processed_rows,
+            "originalRows": original_rows,
+            "duplicatesRemoved": duplicates_removed,
+            "headers": processed_headers,
+            "totalColumns": processed_columns,
             "sessionId": session_id,
             "sheetType": request.sheetType or "shipping",
-            "message": f'File "{file_data["fileName"]}" parsed successfully and saved to Redis (30 min TTL). Analytics computation job queued.'
+            "data": processed_data,  # Return processed data directly
+            "message": f'File "{file_name}" read directly with pandas and processed successfully. {processed_rows} rows ready for analytics.'
         }
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error reading Excel file from Google Drive: {e}")
+        import traceback
+        print(traceback.format_exc())
         raise HTTPException(
             status_code=500,
             detail=f"Failed to read file from Google Drive: {str(e)}"

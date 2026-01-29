@@ -1,18 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getShippingDataFromRedis, getAnalyticsFromRedis, saveAnalyticsToRedis } from '@/lib/redis'
-import { filterShippingData, FilterParams } from '@/lib/analytics'
+import { proxyToPythonBackend } from '@/lib/api-proxy'
 
 /**
  * GET /api/analytics/raw-shipping
- * 
- * Get raw filtered shipping data (paginated to prevent 64MB responses)
+ * Proxy raw shipping data request to Python backend
  */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const sessionId = searchParams.get('sessionId')
-    const page = parseInt(searchParams.get('page') || '1')
-    const limit = Math.min(parseInt(searchParams.get('limit') || '100'), 500) // Max 500 per page
 
     if (!sessionId) {
       return NextResponse.json(
@@ -21,64 +17,37 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Extract filter parameters
-    const filters: FilterParams = {
-      startDate: searchParams.get('startDate') || null,
-      endDate: searchParams.get('endDate') || null,
-      orderStatus: searchParams.get('orderStatus') || undefined,
-      paymentMethod: searchParams.get('paymentMethod') || undefined,
-      channel: searchParams.get('channel') || undefined,
-      sku: searchParams.getAll('sku').length > 0 ? searchParams.getAll('sku') : undefined,
-      productName: searchParams.getAll('productName').length > 0 ? searchParams.getAll('productName') : undefined,
-    }
-
-    // Build cache key for filtered data
-    const filterKey = JSON.stringify(filters)
-    const cacheKey = `raw-shipping:${filterKey}`
+    // Extract all query parameters
+    const queryParams: Record<string, string | string[]> = { sessionId }
     
-    // Try to get cached filtered data
-    let filteredData = await getAnalyticsFromRedis(sessionId, cacheKey)
+    const startDate = searchParams.get('startDate')
+    const endDate = searchParams.get('endDate')
+    const orderStatus = searchParams.get('orderStatus')
+    const paymentMethod = searchParams.get('paymentMethod')
+    const channel = searchParams.get('channel')
+    const sku = searchParams.getAll('sku')
+    const productName = searchParams.getAll('productName')
+    const limit = searchParams.get('limit')
+    const page = searchParams.get('page')
+
+    if (startDate) queryParams.startDate = startDate
+    if (endDate) queryParams.endDate = endDate
+    if (orderStatus) queryParams.orderStatus = orderStatus
+    if (paymentMethod) queryParams.paymentMethod = paymentMethod
+    if (channel) queryParams.channel = channel
+    if (sku.length > 0) queryParams.sku = sku
+    if (productName.length > 0) queryParams.productName = productName
+    if (limit) queryParams.limit = limit
+    if (page) queryParams.page = page
+
+    const response = await proxyToPythonBackend('/api/analytics/raw-shipping', {
+      method: 'GET',
+      queryParams,
+    })
+
+    const data = await response.json()
     
-    if (!filteredData) {
-      // Cache miss - fetch raw data, filter, and cache
-      const data = await getShippingDataFromRedis(sessionId)
-      
-      if (!data || data.length === 0) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: 'No data found',
-          },
-          { status: 404 }
-        )
-      }
-
-      // Apply filters
-      filteredData = filterShippingData(data, filters)
-      
-      // Cache the filtered result (limit to 10k rows max for caching)
-      if (filteredData.length <= 10000) {
-        await saveAnalyticsToRedis(sessionId, cacheKey, filteredData)
-      }
-    }
-
-    // Paginate the results
-    const startIndex = (page - 1) * limit
-    const endIndex = startIndex + limit
-    const paginatedData = filteredData.slice(startIndex, endIndex)
-
-    return NextResponse.json(
-      {
-        success: true,
-        data: paginatedData,
-        count: paginatedData.length,
-        total: filteredData.length,
-        page,
-        limit,
-        totalPages: Math.ceil(filteredData.length / limit),
-      },
-      { status: 200 }
-    )
+    return NextResponse.json(data, { status: response.status })
   } catch (error: any) {
     console.error('Error fetching raw shipping data:', error)
     return NextResponse.json(

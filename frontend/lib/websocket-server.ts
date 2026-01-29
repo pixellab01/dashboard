@@ -4,7 +4,6 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws'
-import { getSessionTTLInfo } from './redis'
 
 interface ClientConnection {
   ws: WebSocket
@@ -51,33 +50,9 @@ export function initWebSocketServer(port: number = 8080) {
       timestamp: new Date().toISOString(),
     }))
 
-    // Start sending TTL updates every second
-    const interval = setInterval(async () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        try {
-          const ttlInfo = await getSessionTTLInfo(sessionId)
-          ws.send(JSON.stringify({
-            type: 'ttl-update',
-            data: ttlInfo,
-            timestamp: new Date().toISOString(),
-          }))
-        } catch (error) {
-          console.error('Error fetching TTL info for WebSocket:', error)
-          ws.send(JSON.stringify({
-            type: 'error',
-            error: 'Failed to fetch TTL info',
-            timestamp: new Date().toISOString(),
-          }))
-        }
-      } else {
-        clearInterval(interval)
-      }
-    }, 1000)
-
     // Handle client disconnect
     ws.on('close', () => {
       console.log(`WebSocket client disconnected for session: ${sessionId}`)
-      clearInterval(interval)
       const sessionClients = clients.get(sessionId)
       if (sessionClients) {
         sessionClients.delete(connection)
@@ -89,7 +64,6 @@ export function initWebSocketServer(port: number = 8080) {
 
     ws.on('error', (error) => {
       console.error('WebSocket error:', error)
-      clearInterval(interval)
     })
   })
 
@@ -123,29 +97,3 @@ export function closeWebSocketServer() {
   }
 }
 
-/**
- * Broadcast TTL update to all clients for a session
- */
-export async function broadcastTTLUpdate(sessionId: string) {
-  const sessionClients = clients.get(sessionId)
-  if (!sessionClients || sessionClients.size === 0) {
-    return
-  }
-
-  try {
-    const ttlInfo = await getSessionTTLInfo(sessionId)
-    const message = JSON.stringify({
-      type: 'ttl-update',
-      data: ttlInfo,
-      timestamp: new Date().toISOString(),
-    })
-
-    sessionClients.forEach((connection) => {
-      if (connection.ws.readyState === WebSocket.OPEN) {
-        connection.ws.send(message)
-      }
-    })
-  } catch (error) {
-    console.error('Error broadcasting TTL update:', error)
-  }
-}

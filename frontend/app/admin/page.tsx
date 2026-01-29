@@ -62,8 +62,17 @@ export default function AdminDashboard() {
       const result = await listGoogleDriveFiles()
       
       if (result.success && result.data) {
-        setGoogleDriveFiles(result.data.files || [])
-        setIsGoogleDriveConfigured(true)
+        const files = result.data.files || []
+        setGoogleDriveFiles(files)
+        
+        // Show helpful message if no files found
+        if (files.length === 0 && result.data.message) {
+          console.warn('Google Drive:', result.data.message)
+          // Still mark as configured since auth is working
+          setIsGoogleDriveConfigured(true)
+        } else {
+          setIsGoogleDriveConfigured(true)
+        }
       } else {
         // Check if error is due to configuration
         const errorMessage = (result.error || '').toLowerCase()
@@ -79,10 +88,26 @@ export default function AdminDashboard() {
         
         // If it's a configuration error or any error, mark as not configured
         setIsGoogleDriveConfigured(false)
+        
+        // Log the error for debugging
+        console.error('Failed to fetch Google Drive files:', result.error)
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error fetching Google Drive files:', error)
+      console.error('Error details:', {
+        message: error.message,
+        name: error.name,
+        stack: error.stack,
+      })
       setIsGoogleDriveConfigured(false)
+      
+      // Show user-friendly error message
+      if (error.message?.includes('Failed to fetch')) {
+        alert('Failed to connect to the server. Please ensure:\n' +
+          '1. The frontend development server is running\n' +
+          '2. The backend server is running at http://localhost:8000\n' +
+          '3. Check the browser console for more details')
+      }
     } finally {
       setLoadingFiles(false)
     }
@@ -104,15 +129,23 @@ export default function AdminDashboard() {
       if (result.data) {
         const data = result.data
         // If it's a shipping file, compute analytics and redirect
-        if (sheetType === 'shipping' && data.sessionId) {
+        if (sheetType === 'shipping') {
+          if (!data.sessionId) {
+            console.error('Error: sessionId not found in response', data)
+            alert('Error: Session ID not returned from server. Please try again.')
+            return
+          }
+          
           // Store session ID in localStorage
           localStorage.setItem('analyticsSessionId', data.sessionId)
+          console.log('Session ID stored:', data.sessionId)
           
           // Compute analytics in background
           try {
             await computeAnalytics(data.sessionId)
           } catch (error) {
             console.error('Error computing analytics:', error)
+            // Don't fail the request - analytics can be computed later
           }
           
           let message = `File "${data.fileName}" read successfully from Google Drive!\n\n` +
@@ -139,6 +172,9 @@ export default function AdminDashboard() {
           
           alert(message)
         }
+      } else {
+        console.error('Error: No data in response', result)
+        alert('Error: No data returned from server. Please try again.')
       }
     } catch (error) {
       alert('An error occurred while reading the file from Google Drive. Please try again.')
@@ -214,7 +250,14 @@ export default function AdminDashboard() {
             <h2 className="text-2xl font-bold text-white">Google Drive Files</h2>
             <div className="flex gap-2">
               <motion.button
-                onClick={() => router.push('/admin/analytics')}
+                onClick={() => {
+                  const storedSessionId = localStorage.getItem('analyticsSessionId')
+                  if (storedSessionId) {
+                    router.push(`/admin/analytics?sessionId=${storedSessionId}`)
+                  } else {
+                    alert('No session ID found. Please read a shipping file first.')
+                  }
+                }}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold flex items-center gap-2"
@@ -266,7 +309,17 @@ export default function AdminDashboard() {
             </div>
           ) : googleDriveFiles.length === 0 ? (
             <div className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50">
-              <p className="text-gray-400">No Excel files found in Google Drive. Please check your Google Drive folder configuration.</p>
+              <p className="text-gray-400 mb-2">No Excel files found in Google Drive.</p>
+              <div className="text-sm text-gray-500 space-y-1">
+                <p>Please check:</p>
+                <ul className="list-disc list-inside ml-2 space-y-1">
+                  <li>The folder ID is correct (if configured in environment variables)</li>
+                  <li>The folder contains Excel (.xlsx, .xls) or CSV files</li>
+                  <li>Your Google account has access to the folder</li>
+                  <li>The files are not in Trash</li>
+                </ul>
+                <p className="mt-2 text-gray-400">Check the backend console logs for more details.</p>
+              </div>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -334,188 +387,6 @@ export default function AdminDashboard() {
           ))}
         </div>
 
-        {/* Analytics Dashboard Link */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5 }}
-          className="mb-8"
-        >
-          <div className="mb-6">
-            <h2 className="text-3xl font-bold text-white">Analytics Dashboard</h2>
-            <p className="text-gray-400 mt-2">View comprehensive analytics and reports</p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {/* NDR Analytics */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.6 }}
-              className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-yellow-500/20 rounded-lg">
-                    <svg className="w-6 h-6 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">NDR Analytics</h3>
-                    <p className="text-gray-400 text-sm">NDR trends & conversion</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => router.push('/admin/reports?report=ndr-analytics')}
-                className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-yellow-600 to-yellow-700 hover:from-yellow-700 hover:to-yellow-800 text-white rounded-lg font-semibold transition-all"
-              >
-                View Reports
-              </button>
-            </motion.div>
-
-            {/* State Performance */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.7 }}
-              className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-blue-500/20 rounded-lg">
-                    <svg className="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">State Performance</h3>
-                    <p className="text-gray-400 text-sm">State-wise delivery metrics</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => router.push('/admin/reports?report=state-performance')}
-                className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-semibold transition-all"
-              >
-                View Reports
-              </button>
-            </motion.div>
-
-            {/* Operational Metrics */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.8 }}
-              className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-green-500/20 rounded-lg">
-                    <svg className="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Operational Metrics</h3>
-                    <p className="text-gray-400 text-sm">TAT, volumes & status</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => router.push('/admin/reports?report=operational-metrics')}
-                className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white rounded-lg font-semibold transition-all"
-              >
-                View Reports
-              </button>
-            </motion.div>
-
-            {/* Category Analytics */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.9 }}
-              className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-purple-500/20 rounded-lg">
-                    <svg className="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Category Analytics</h3>
-                    <p className="text-gray-400 text-sm">Category-wise insights</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => router.push('/admin/reports?report=category-analytics')}
-                className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-semibold transition-all"
-              >
-                View Reports
-              </button>
-            </motion.div>
-
-            {/* Cancellation Tracking */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 1.0 }}
-              className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-red-500/20 rounded-lg">
-                    <svg className="w-6 h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Cancellation Tracking</h3>
-                    <p className="text-gray-400 text-sm">Cancellation trends & reasons</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => router.push('/admin/reports?report=cancellation-tracking')}
-                className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg font-semibold transition-all"
-              >
-                View Reports
-              </button>
-            </motion.div>
-
-            {/* Summary Dashboard */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 1.1 }}
-              className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-indigo-500/20 rounded-lg">
-                    <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Summary Dashboard</h3>
-                    <p className="text-gray-400 text-sm">Complete overview</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => router.push('/admin/reports')}
-                className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-lg font-semibold transition-all"
-              >
-                View All Reports
-              </button>
-            </motion.div>
-          </div>
-        </motion.div>
 
         {/* Dashboard Sections */}
         <div className="grid grid-cols-1 lg:grid-cols-1 gap-6">

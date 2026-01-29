@@ -65,6 +65,21 @@ export default function AnalyticsFilters({
   // Helper to get selected Product Names as array
   const selectedProductNames = Array.isArray(filters.productName) ? filters.productName : (filters.productName === 'All' || !filters.productName ? [] : [filters.productName])
 
+  // Sync filtered options with props when no channel/SKU filter is active
+  useEffect(() => {
+    if (filters.channel === 'All' || !filters.channel) {
+      setFilteredSkus(availableSkus)
+      setFilteredSkusTop10(availableSkusTop10)
+    }
+  }, [availableSkus, availableSkusTop10, filters.channel])
+
+  useEffect(() => {
+    if (selectedSkus.length === 0) {
+      setFilteredProductNames(availableProductNames)
+      setFilteredProductNamesTop10(availableProductNamesTop10)
+    }
+  }, [availableProductNames, availableProductNamesTop10, selectedSkus.length])
+
   // Fetch filtered options when channel or SKU changes
   useEffect(() => {
     if (!sessionId) {

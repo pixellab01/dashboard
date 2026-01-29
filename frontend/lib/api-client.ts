@@ -70,7 +70,8 @@ export async function fetchAnalytics<T>(
 ): Promise<ApiResponse<T>> {
   try {
     const queryString = buildQueryString(params)
-    const url = `${PYTHON_API_URL}/api/analytics/${endpoint}?${queryString}`
+    // Use Next.js API route instead of direct backend call
+    const url = `/api/analytics/${endpoint}?${queryString}`
     
     const response = await fetch(url)
     
@@ -90,14 +91,15 @@ export async function fetchAnalytics<T>(
       }
     }
     
-    const data = await response.json()
+    const responseData = await response.json()
     
-    // Python backend returns data directly (array or object)
-    // Wrap it to match frontend expectations
+    // Backend returns { success, data, count, ... } - extract the data
+    // Handle both wrapped response and direct array response
+    const actualData = responseData.data !== undefined ? responseData.data : responseData
     return {
-      success: true,
-      data: Array.isArray(data) ? data : data,
-      count: Array.isArray(data) ? data.length : 1,
+      success: responseData.success !== undefined ? responseData.success : true,
+      data: actualData as T,
+      count: responseData.count || (Array.isArray(actualData) ? actualData.length : 1),
     }
   } catch (error: any) {
     console.error(`Error fetching ${endpoint}:`, error)
@@ -125,7 +127,8 @@ export async function computeAnalytics(
   asyncMode: boolean = false
 ): Promise<ApiResponse<{ sessionId: string; jobId?: string }>> {
   try {
-    const url = `${PYTHON_API_URL}/api/analytics/compute${asyncMode ? '?async_mode=true' : ''}`
+    // Use Next.js API route instead of direct backend call
+    const url = `/api/analytics/compute${asyncMode ? '?async_mode=true' : ''}`
     
     const response = await fetch(url, {
       method: 'POST',
@@ -192,12 +195,21 @@ export async function generateSessionId(): Promise<string> {
  */
 export async function login(email: string, password: string): Promise<ApiResponse<{ user: any; message: string }>> {
   try {
-    const response = await fetch(`${PYTHON_API_URL}/api/login`, {
+    console.log('[API Client] Initiating login request to /api/login')
+    
+    // Use Next.js API route instead of direct Python backend call to avoid CORS issues
+    const response = await fetch('/api/login', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ email, password }),
+    })
+    
+    console.log('[API Client] Login response received:', {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok,
     })
     
     if (!response.ok) {
@@ -217,7 +229,21 @@ export async function login(email: string, password: string): Promise<ApiRespons
       },
     }
   } catch (error: any) {
-    console.error('Error logging in:', error)
+    console.error('[API Client] Error logging in:', error)
+    console.error('[API Client] Error details:', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+    })
+    
+    // Handle specific error types
+    if (error.message?.includes('Failed to fetch') || error.name === 'TypeError') {
+      return {
+        success: false,
+        error: 'Cannot connect to the server. Please check if the frontend server is running and the API route is accessible.',
+      }
+    }
+    
     return {
       success: false,
       error: error.message || 'Network error',
@@ -230,7 +256,8 @@ export async function login(email: string, password: string): Promise<ApiRespons
  */
 export async function getStats(): Promise<ApiResponse<{ totalUsers: number; message: string }>> {
   try {
-    const response = await fetch(`${PYTHON_API_URL}/api/stats`)
+    // Use Next.js API route instead of direct backend call
+    const response = await fetch('/api/stats')
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }))
@@ -306,16 +333,38 @@ export async function listGoogleDriveFiles(folderId?: string): Promise<ApiRespon
     mimeType: string
     modifiedTime: string
   }>
+  message?: string
+  folderId?: string
 }>> {
   try {
+    // Use Next.js API route instead of direct backend call
     const url = folderId
-      ? `${PYTHON_API_URL}/api/google-drive/files?folderId=${encodeURIComponent(folderId)}`
-      : `${PYTHON_API_URL}/api/google-drive/files`
+      ? `/api/google-drive/files?folderId=${encodeURIComponent(folderId)}`
+      : `/api/google-drive/files`
     
-    const response = await fetch(url)
+    console.log('[API Client] Fetching Google Drive files from:', url)
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
     
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }))
+      let errorData
+      try {
+        errorData = await response.json()
+      } catch {
+        errorData = { detail: `HTTP ${response.status}: ${response.statusText}` }
+      }
+      
+      console.error('[API Client] Error response:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorData,
+      })
+      
       return {
         success: false,
         error: errorData.detail || errorData.error || `HTTP ${response.status}`,
@@ -323,17 +372,40 @@ export async function listGoogleDriveFiles(folderId?: string): Promise<ApiRespon
     }
     
     const data = await response.json()
+    console.log('[API Client] Successfully fetched files:', { 
+      fileCount: data.files?.length || 0,
+      hasMessage: !!data.message 
+    })
+    
     return {
       success: data.success || true,
       data: {
         files: data.files || [],
+        message: data.message,
+        folderId: data.folderId,
       },
     }
   } catch (error: any) {
-    console.error('Error listing Google Drive files:', error)
+    console.error('[API Client] Error listing Google Drive files:', error)
+    console.error('[API Client] Error details:', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+    })
+    
+    // Provide more specific error messages
+    let errorMessage = error.message || 'Network error'
+    
+    if (error.message?.includes('Failed to fetch')) {
+      errorMessage = 'Failed to connect to the server. Please ensure:\n' +
+        '1. The frontend development server is running\n' +
+        '2. The backend server is running at http://localhost:8000\n' +
+        '3. There are no network connectivity issues'
+    }
+    
     return {
       success: false,
-      error: error.message || 'Network error',
+      error: errorMessage,
     }
   }
 }
@@ -356,7 +428,8 @@ export async function readGoogleDriveFile(
   message: string
 }>> {
   try {
-    const response = await fetch(`${PYTHON_API_URL}/api/google-drive/read`, {
+    // Use Next.js API route to proxy to Python backend
+    const response = await fetch('/api/google-drive/read', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -373,6 +446,12 @@ export async function readGoogleDriveFile(
     }
     
     const data = await response.json()
+    
+    // Ensure sessionId is present in the response
+    if (!data.sessionId && data.success) {
+      console.warn('Warning: sessionId not found in response from backend')
+    }
+    
     return {
       success: data.success || true,
       data: {
@@ -406,7 +485,8 @@ export async function getGoogleDriveAuthUrl(): Promise<ApiResponse<{
   instructions: string
 }>> {
   try {
-    const response = await fetch(`${PYTHON_API_URL}/api/google-drive/auth`)
+    // Use Next.js API route instead of direct backend call
+    const response = await fetch('/api/google-drive/auth')
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }))
@@ -457,7 +537,7 @@ export async function getRawShippingData(
     
     if (filters) {
       if (filters.startDate) queryParams.append('startDate', filters.startDate)
-      if (filters.endDate) queryParams.append('filters.endDate', filters.endDate)
+      if (filters.endDate) queryParams.append('endDate', filters.endDate)
       if (filters.orderStatus && filters.orderStatus !== 'All') {
         queryParams.append('orderStatus', filters.orderStatus)
       }
@@ -481,7 +561,8 @@ export async function getRawShippingData(
       queryParams.append('limit', String(limit))
     }
     
-    const response = await fetch(`${PYTHON_API_URL}/api/analytics/raw-shipping?${queryParams.toString()}`)
+    // Use Next.js API route instead of direct backend call
+    const response = await fetch(`/api/analytics/raw-shipping?${queryParams.toString()}`)
     
     if (!response.ok) {
       if (response.status === 404) {
@@ -498,11 +579,13 @@ export async function getRawShippingData(
       }
     }
     
-    const data = await response.json()
+    const responseData = await response.json()
+    // Backend returns { success, data, count, total, ... } - extract the data array
+    const dataArray = responseData.data || (Array.isArray(responseData) ? responseData : [])
     return {
-      success: true,
-      data: Array.isArray(data) ? data : [],
-      count: Array.isArray(data) ? data.length : 0,
+      success: responseData.success !== undefined ? responseData.success : true,
+      data: dataArray,
+      count: responseData.count || (Array.isArray(dataArray) ? dataArray.length : 0),
     }
   } catch (error: any) {
     console.error('Error fetching raw shipping data:', error)
@@ -519,11 +602,14 @@ export async function getRawShippingData(
 export async function getFilterOptions(sessionId: string): Promise<ApiResponse<{
   channels: string[]
   skus: string[]
+  skusTop10: string[]
   productNames: string[]
+  productNamesTop10: string[]
   statuses: string[]
 }>> {
   try {
-    const response = await fetch(`${PYTHON_API_URL}/api/analytics/filter-options?sessionId=${encodeURIComponent(sessionId)}`)
+    // Use Next.js API route instead of direct backend call
+    const response = await fetch(`/api/analytics/filter-options?sessionId=${encodeURIComponent(sessionId)}`)
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }))
@@ -539,7 +625,9 @@ export async function getFilterOptions(sessionId: string): Promise<ApiResponse<{
       data: {
         channels: data.channels || [],
         skus: data.skus || [],
+        skusTop10: data.skusTop10 || [],
         productNames: data.productNames || [],
+        productNamesTop10: data.productNamesTop10 || [],
         statuses: data.statuses || [],
       },
     }
@@ -552,37 +640,3 @@ export async function getFilterOptions(sessionId: string): Promise<ApiResponse<{
   }
 }
 
-/**
- * Get TTL info for analytics data
- */
-export async function getTtlInfo(sessionId: string): Promise<ApiResponse<{
-  shipping: { ttl: number; expiresAt: string | null }
-  analytics: { [key: string]: { ttl: number; expiresAt: string | null } }
-}>> {
-  try {
-    const response = await fetch(`${PYTHON_API_URL}/api/analytics/ttl-info?sessionId=${encodeURIComponent(sessionId)}`)
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }))
-      return {
-        success: false,
-        error: errorData.detail || errorData.error || `HTTP ${response.status}`,
-      }
-    }
-    
-    const data = await response.json()
-    return {
-      success: true,
-      data: {
-        shipping: data.shipping || { ttl: 0, expiresAt: null },
-        analytics: data.analytics || {},
-      },
-    }
-  } catch (error: any) {
-    console.error('Error fetching TTL info:', error)
-    return {
-      success: false,
-      error: error.message || 'Network error',
-    }
-  }
-}

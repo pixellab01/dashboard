@@ -5,10 +5,37 @@ Handles user authentication and authorization
 from typing import Optional, Dict, Any
 from backend.utils.mongodb import get_users_collection
 from bson import ObjectId
+import bcrypt
 
 
 class AuthService:
     """Authentication service"""
+    
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        """
+        Hash a password using bcrypt
+        """
+        salt = bcrypt.gensalt()
+        return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+    
+    @staticmethod
+    def _verify_password(password: str, hashed_password: str) -> bool:
+        """
+        Verify a password against a hashed password
+        Supports both bcrypt hashed passwords and plain text (for backward compatibility)
+        """
+        # Check if password is already hashed (bcrypt hashes start with $2b$)
+        if hashed_password.startswith('$2b$'):
+            try:
+                return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+            except Exception:
+                return False
+        else:
+            # Backward compatibility: plain text password comparison
+            # This allows existing users with plain text passwords to still login
+            # New users will have hashed passwords
+            return password == hashed_password
     
     @staticmethod
     def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any]]:
@@ -24,9 +51,21 @@ class AuthService:
         if not user:
             return None
         
-        # Simple password comparison (in production, use bcrypt or similar)
-        if user.get("password") != password:
+        stored_password = user.get("password")
+        if not stored_password:
             return None
+        
+        # Verify password (supports both bcrypt and plain text for backward compatibility)
+        if not AuthService._verify_password(password, stored_password):
+            return None
+        
+        # If user has plain text password, upgrade it to hashed password
+        if not stored_password.startswith('$2b$'):
+            hashed_password = AuthService._hash_password(password)
+            users_collection.update_one(
+                {"_id": user["_id"]},
+                {"$set": {"password": hashed_password}}
+            )
         
         # Return user data without password
         user_dict = dict(user)
@@ -41,9 +80,13 @@ class AuthService:
         """
         Create or update admin user
         Ensures only one admin user exists
+        Passwords are automatically hashed using bcrypt
         """
         from datetime import datetime
         users_collection = get_users_collection()
+        
+        # Hash the password before storing
+        hashed_password = AuthService._hash_password(password)
         
         # Find existing admin users
         existing_admins = list(users_collection.find({"role": "admin"}))
@@ -65,7 +108,7 @@ class AuthService:
                 {
                     "$set": {
                         "email": email,
-                        "password": password,
+                        "password": hashed_password,
                         "name": name,
                         "role": "admin",
                         "updatedAt": datetime.now().isoformat()
@@ -93,7 +136,7 @@ class AuthService:
             # Create new admin user
             new_admin = {
                 "email": email,
-                "password": password,
+                "password": hashed_password,
                 "name": name,
                 "role": "admin",
                 "createdAt": datetime.now().isoformat(),

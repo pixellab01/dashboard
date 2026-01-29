@@ -1,51 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getQueueStats, getJobStatus } from '@/lib/queue'
+import { proxyToPythonBackend } from '@/lib/api-proxy'
 
 /**
  * GET /api/admin/queue
- * 
- * Get queue statistics and job status
- * Useful for monitoring the analytics computation queue
+ * Proxy admin queue request to Python backend
  */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const sessionId = searchParams.get('sessionId')
 
-    // If sessionId provided, get specific job status
-    if (sessionId) {
-      const jobStatus = await getJobStatus(sessionId)
-      
-      if (!jobStatus) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: 'Job not found for this session',
-          },
-          { status: 404 }
-        )
-      }
+    const response = await proxyToPythonBackend('/api/admin/queue', {
+      method: 'GET',
+      queryParams: sessionId ? { sessionId } : undefined,
+    })
 
-      return NextResponse.json(
-        {
-          success: true,
-          job: jobStatus,
-        },
-        { status: 200 }
-      )
-    }
-
-    // Otherwise, get queue statistics
-    const stats = await getQueueStats()
-
-    return NextResponse.json(
-      {
-        success: true,
-        stats,
-        timestamp: new Date().toISOString(),
-      },
-      { status: 200 }
-    )
+    const data = await response.json()
+    
+    return NextResponse.json(data, { status: response.status })
   } catch (error: any) {
     console.error('Error fetching queue stats:', error)
     return NextResponse.json(
