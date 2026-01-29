@@ -1,16 +1,22 @@
 /**
- * MongoDB Aggregation Pipelines for Shipping Analytics
+ * MongoDB Aggregation Pipeline Type Definitions
  * 
- * Pre-aggregated pipelines optimized for dashboard queries
+ * NOTE: These are TypeScript type definitions only. These pipelines are NOT used
+ * to query MongoDB. All analytics are computed in-memory from Redis data.
+ * 
+ * MongoDB is used ONLY for user management (authentication).
+ * All shipping data and analytics are stored in Redis.
+ * 
+ * This file exists for type reference only and can be removed if not needed.
  */
 
-import { PipelineStage } from 'mongodb'
+import { Document } from 'mongodb'
 
 /**
  * Weekly NDR Analytics Pipeline
  * Aggregates NDR metrics by week
  */
-export function getNDRWeeklyPipeline(): PipelineStage[] {
+export function getNDRWeeklyPipeline(): Document[] {
   return [
     {
       $match: {
@@ -79,7 +85,7 @@ export function getNDRWeeklyPipeline(): PipelineStage[] {
 /**
  * NDR Reason Share Pipeline
  */
-export function getNDRReasonSharePipeline(): PipelineStage[] {
+export function getNDRReasonSharePipeline(): Document[] {
   return [
     {
       $match: {
@@ -152,7 +158,7 @@ export function getNDRReasonSharePipeline(): PipelineStage[] {
 /**
  * State Performance Pipeline
  */
-export function getStatePerformancePipeline(): PipelineStage[] {
+export function getStatePerformancePipeline(): Document[] {
   return [
     {
       $match: {
@@ -274,11 +280,11 @@ export function getStatePerformancePipeline(): PipelineStage[] {
 /**
  * Channel Share Pipeline
  */
-export function getChannelSharePipeline(): PipelineStage[] {
+export function getChannelSharePipeline(): Document[] {
   return [
     {
       $match: {
-        channel: { $exists: true, $ne: null, $ne: 'none' },
+        channel: { $exists: true, $nin: [null, 'none'] },
       },
     },
     {
@@ -423,7 +429,7 @@ export function getChannelSharePipeline(): PipelineStage[] {
 /**
  * Category Share Pipeline
  */
-export function getCategorySharePipeline(): PipelineStage[] {
+export function getCategorySharePipeline(): Document[] {
   return [
     {
       $match: {
@@ -517,7 +523,7 @@ export function getCategorySharePipeline(): PipelineStage[] {
 /**
  * Cancellation Tracker Pipeline
  */
-export function getCancellationTrackerPipeline(): PipelineStage[] {
+export function getCancellationTrackerPipeline(): Document[] {
   return [
     {
       $match: {
@@ -570,7 +576,7 @@ export function getCancellationTrackerPipeline(): PipelineStage[] {
 /**
  * TAT Metrics Pipeline
  */
-export function getTATMetricsPipeline(): PipelineStage[] {
+export function getTATMetricsPipeline(): Document[] {
   return [
     {
       $match: {
@@ -623,7 +629,7 @@ export function getTATMetricsPipeline(): PipelineStage[] {
 /**
  * Weekly Summary KPIs Pipeline
  */
-export function getWeeklySummaryPipeline(): PipelineStage[] {
+export function getWeeklySummaryPipeline(): Document[] {
   return [
     {
       $match: {
@@ -785,7 +791,7 @@ export function getWeeklySummaryPipeline(): PipelineStage[] {
 /**
  * Address Quality Share Pipeline
  */
-export function getAddressQualityPipeline(): PipelineStage[] {
+export function getAddressQualityPipeline(): Document[] {
   return [
     {
       $match: {

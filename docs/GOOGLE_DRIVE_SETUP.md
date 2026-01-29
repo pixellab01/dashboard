@@ -228,14 +228,16 @@ Body: { fileId: "google-drive-file-id", sheetType: "shipping" }
 
 ## MongoDB Collections
 
-After migration, MongoDB is used only for:
-- `users` - User authentication data
-- `analytics_*` - Cached analytics results (not raw Excel data)
-- `analytics_metadata` - Analytics computation metadata
+**MongoDB is used ONLY for user management:**
+- `users` - User authentication and authorization data
 
-The following collections are no longer used:
+**All other data is stored in Redis:**
+- Shipping data (temporary, 30-minute TTL)
+- Analytics results (temporary, 30-minute TTL)
+- Analytics metadata (temporary, 30-minute TTL)
+
+**Legacy collections (no longer used - can be safely deleted):**
 - `shipping_details`
 - `meta_campaign_details`
 - `google_sheet_details`
-
-You can safely delete these collections if they exist.
+- `analytics_*` (if any exist)

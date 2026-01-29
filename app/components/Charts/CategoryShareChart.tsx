@@ -23,6 +23,7 @@ interface CategoryShareData {
   value_share_percent: number
   delivered: number
   delivery_percent: number
+  [key: string]: string | number
 }
 
 interface Props {

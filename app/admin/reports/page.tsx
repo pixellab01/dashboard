@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion } from 'framer-motion'
 import NDRWeeklyChart from '@/app/components/Charts/NDRWeeklyChart'
@@ -41,7 +41,46 @@ interface AnalyticsMetrics {
   avg_total_tat: number
 }
 
-export default function ReportsPage() {
+interface WeeklySummaryData {
+  order_week: string
+  total_orders: number
+  total_order_value: number
+  avg_order_value: number
+  fad_count: number
+  fad_percent: number
+  ofd_count: number
+  ofd_percent: number
+  del_count: number
+  del_percent: number
+  ndr_count: number
+  ndr_rate_percent: number
+  rto_count: number
+  rto_rate_percent: number
+  avg_total_tat: number
+}
+
+// Transform AnalyticsMetrics to WeeklySummaryData by calculating percentages
+function transformToWeeklySummaryData(metrics: AnalyticsMetrics[]): WeeklySummaryData[] {
+  return metrics.map((m) => ({
+    order_week: m.order_week,
+    total_orders: m.total_orders,
+    total_order_value: m.total_order_value,
+    avg_order_value: m.avg_order_value,
+    fad_count: m.fad_count,
+    fad_percent: m.total_orders > 0 ? (m.fad_count / m.total_orders) * 100 : 0,
+    ofd_count: m.ofd_count,
+    ofd_percent: m.total_orders > 0 ? (m.ofd_count / m.total_orders) * 100 : 0,
+    del_count: m.del_count,
+    del_percent: m.total_orders > 0 ? (m.del_count / m.total_orders) * 100 : 0,
+    ndr_count: m.ndr_count,
+    ndr_rate_percent: m.ndr_rate_percent,
+    rto_count: m.rto_count,
+    rto_rate_percent: m.total_orders > 0 ? (m.rto_count / m.total_orders) * 100 : 0,
+    avg_total_tat: m.avg_total_tat,
+  }))
+}
+
+function ReportsPageContent() {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [reportData, setReportData] = useState<ReportData | null>(null)
@@ -398,7 +437,7 @@ export default function ReportsPage() {
               {selectedReport === 'operational-metrics' && (
                 <div>
                   {analyticsMetrics.length > 0 ? (
-                    <WeeklySummaryChart data={analyticsMetrics} />
+                    <WeeklySummaryChart data={transformToWeeklySummaryData(analyticsMetrics)} />
                   ) : (
                     <div className="text-center py-12">
                       <p className="text-gray-400 mb-4">No operational metrics data available.</p>
@@ -622,7 +661,7 @@ export default function ReportsPage() {
             ) : analyticsMetrics.length > 0 ? (
               <div className="space-y-6">
                 {/* Weekly Summary Charts */}
-                <WeeklySummaryChart data={analyticsMetrics} />
+                <WeeklySummaryChart data={transformToWeeklySummaryData(analyticsMetrics)} />
 
                 {/* Key Metrics Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -683,5 +722,17 @@ export default function ReportsPage() {
 
       </main>
     </div>
+  )
+}
+
+export default function ReportsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center min-h-screen bg-gray-900">
+        <div className="text-white text-xl">Loading...</div>
+      </div>
+    }>
+      <ReportsPageContent />
+    </Suspense>
   )
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion } from 'framer-motion'
 import AnalyticsFilters, { FilterState } from '@/app/components/AnalyticsFilters'
@@ -24,7 +24,7 @@ interface User {
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d']
 
-export default function AnalyticsDashboard() {
+function AnalyticsDashboardContent() {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [loadingData, setLoadingData] = useState(true)
@@ -4509,5 +4509,17 @@ export default function AnalyticsDashboard() {
         </main>
       </div>
     </div>
+  )
+}
+
+export default function AnalyticsDashboard() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center min-h-screen bg-gray-900">
+        <div className="text-white text-xl">Loading...</div>
+      </div>
+    }>
+      <AnalyticsDashboardContent />
+    </Suspense>
   )
 }
