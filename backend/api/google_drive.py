@@ -422,7 +422,8 @@ async def read_file(request: ReadFileRequest):
             "totalColumns": processed_columns,
             "sheetType": request.sheetType or "shipping",
         }
-        store_shipping_data(session_id, processed_data, metadata)
+        # Store with DataFrame to avoid repeated conversions
+        store_shipping_data(session_id, processed_data, metadata, processed_df)
         
         return {
             "success": True,

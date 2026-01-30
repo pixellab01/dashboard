@@ -25,5 +25,7 @@ if __name__ == "__main__":
         port=8000,
         reload=True,  # Auto-reload on code changes
         reload_dirs=[backend_dir],  # Watch backend directory for changes
-        log_level="info"
+        log_level="info",
+        timeout_keep_alive=300,  # 5 minutes keep-alive timeout
+        timeout_graceful_shutdown=30  # 30 seconds graceful shutdown
     )

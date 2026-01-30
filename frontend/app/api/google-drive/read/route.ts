@@ -16,9 +16,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Use 5 minute timeout for file reading (large files may take time)
     const response = await proxyToPythonBackend('/api/google-drive/read', {
       method: 'POST',
       body,
+      timeout: 300000, // 5 minutes (300000ms)
     })
 
     const data = await response.json()

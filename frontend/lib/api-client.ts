@@ -427,6 +427,10 @@ export async function readGoogleDriveFile(
   sheetType: string
   message: string
 }>> {
+  // Create AbortController for timeout (5 minutes + 30 seconds buffer)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 330000) // 5.5 minutes
+  
   try {
     // Use Next.js API route to proxy to Python backend
     const response = await fetch('/api/google-drive/read', {
@@ -435,7 +439,10 @@ export async function readGoogleDriveFile(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ fileId, sheetType }),
+      signal: controller.signal,
     })
+    
+    clearTimeout(timeoutId)
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }))
@@ -467,7 +474,17 @@ export async function readGoogleDriveFile(
       },
     }
   } catch (error: any) {
+    clearTimeout(timeoutId)
     console.error('Error reading Google Drive file:', error)
+    
+    // Handle timeout specifically
+    if (error.name === 'AbortError' || error.message?.includes('timeout')) {
+      return {
+        success: false,
+        error: 'Request timed out. The file might be too large. Please try again or contact support.',
+      }
+    }
+    
     return {
       success: false,
       error: error.message || 'Network error',

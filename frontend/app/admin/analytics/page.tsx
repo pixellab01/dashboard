@@ -220,7 +220,10 @@ function AnalyticsDashboardContent() {
         productNameArray.forEach(productName => filterParams.append('productName', productName))
       }
 
-      // Fetch all analytics data from Python backend
+      // Import getRawShippingData for parallel fetching
+      const { getRawShippingData } = await import('@/lib/api-client')
+
+      // Fetch all analytics data from Python backend (including raw shipping data)
       const [
         weeklyData,
         ndrData,
@@ -239,6 +242,7 @@ function AnalyticsDashboardContent() {
         fadDelCanRtoData,
         cancellationReasonTrackerData,
         deliveryPartnerAnalysisData,
+        rawShippingDataResult,
       ] = await Promise.all([
         fetchAnalytics('weekly-summary', { sessionId: currentSessionId, ...currentFilters }),
         fetchAnalytics('ndr-weekly', { sessionId: currentSessionId, ...currentFilters }),
@@ -257,47 +261,73 @@ function AnalyticsDashboardContent() {
         fetchAnalytics('fad-del-can-rto', { sessionId: currentSessionId, ...currentFilters }),
         fetchAnalytics('cancellation-reason-tracker', { sessionId: currentSessionId, ...currentFilters }),
         fetchAnalytics('delivery-partner-analysis', { sessionId: currentSessionId, ...currentFilters }),
+        getRawShippingData(currentSessionId, {
+          startDate: currentFilters.startDate,
+          endDate: currentFilters.endDate,
+          orderStatus: currentFilters.orderStatus !== 'All' ? currentFilters.orderStatus : undefined,
+          paymentMethod: currentFilters.paymentMethod !== 'All' ? currentFilters.paymentMethod : undefined,
+          channel: currentFilters.channel !== 'All' ? currentFilters.channel : undefined,
+          sku: currentFilters.sku !== 'All' ? (Array.isArray(currentFilters.sku) ? currentFilters.sku : [currentFilters.sku]) : undefined,
+          productName: currentFilters.productName !== 'All' ? (Array.isArray(currentFilters.productName) ? currentFilters.productName : [currentFilters.productName]) : undefined,
+        }),
       ])
 
       // Set data immediately for successful APIs (progressive loading - show data as it arrives)
-      if (weeklyData.success) setWeeklySummary(weeklyData.data || [])
-      if (ndrData.success) setNdrWeekly(ndrData.data || [])
-      if (stateData.success) setStatePerformance(stateData.data || [])
-      if (categoryData.success) setCategoryShare(categoryData.data || [])
-      if (cancellationData.success) setCancellationData(cancellationData.data || [])
-      if (channelData.success) setChannelShare(channelData.data || [])
-      if (paymentData.success) setPaymentMethodData(paymentData.data || [])
+      if (weeklyData.success) setWeeklySummary(Array.isArray(weeklyData.data) ? weeklyData.data : [])
+      if (ndrData.success) setNdrWeekly(Array.isArray(ndrData.data) ? ndrData.data : [])
+      if (stateData.success) setStatePerformance(Array.isArray(stateData.data) ? stateData.data : [])
+      if (categoryData.success) setCategoryShare(Array.isArray(categoryData.data) ? categoryData.data : [])
+      if (cancellationData.success) setCancellationData(Array.isArray(cancellationData.data) ? cancellationData.data : [])
+      if (channelData.success) setChannelShare(Array.isArray(channelData.data) ? channelData.data : [])
+      if (paymentData.success) setPaymentMethodData(Array.isArray(paymentData.data) ? paymentData.data : [])
       if (statusesData.success) {
         const data = statusesData.data
         // Ensure data is an array
         setOrderStatusesData(Array.isArray(data) ? data : [])
       }
       if (paymentOutcomeData.success) {
-        setPaymentMethodOutcomeData(paymentOutcomeData.data || [])
-        setStatusCategories(paymentOutcomeData.statusCategories || [])
+        setPaymentMethodOutcomeData(Array.isArray(paymentOutcomeData.data) ? paymentOutcomeData.data : [])
+        const data = paymentOutcomeData.data as any
+        if (data && typeof data === 'object' && 'statusCategories' in data) {
+          setStatusCategories(Array.isArray(data.statusCategories) ? data.statusCategories : [])
+        }
       }
-      if (productAnalysisData.success) setProductAnalysisData(productAnalysisData.data || [])
-      if (ndrCountData.success) setNdrCountData(ndrCountData.data || [])
-      if (addressTypeShareData.success) setAddressTypeShareData(addressTypeShareData.data || [])
-      if (averageOrderTatData.success) setAverageOrderTatData(averageOrderTatData.data || [])
-      if (fadDelCanRtoData.success) setFadDelCanRtoData(fadDelCanRtoData.data || [])
-      if (cancellationReasonTrackerData.success) setCancellationReasonTrackerData(cancellationReasonTrackerData.data || [])
-      if (deliveryPartnerAnalysisData.success) setDeliveryPartnerAnalysisData(deliveryPartnerAnalysisData.data || [])
+      if (productAnalysisData.success) setProductAnalysisData(Array.isArray(productAnalysisData.data) ? productAnalysisData.data : [])
+      if (ndrCountData.success) setNdrCountData(Array.isArray(ndrCountData.data) ? ndrCountData.data : [])
+      if (addressTypeShareData.success) setAddressTypeShareData(Array.isArray(addressTypeShareData.data) ? addressTypeShareData.data : [])
+      if (averageOrderTatData.success) setAverageOrderTatData(Array.isArray(averageOrderTatData.data) ? averageOrderTatData.data : [])
+      if (fadDelCanRtoData.success) setFadDelCanRtoData(Array.isArray(fadDelCanRtoData.data) ? fadDelCanRtoData.data : [])
+      if (cancellationReasonTrackerData.success) setCancellationReasonTrackerData(Array.isArray(cancellationReasonTrackerData.data) ? cancellationReasonTrackerData.data : [])
+      if (deliveryPartnerAnalysisData.success) setDeliveryPartnerAnalysisData(Array.isArray(deliveryPartnerAnalysisData.data) ? deliveryPartnerAnalysisData.data : [])
+      
+      // Set raw shipping data (for Day view)
+      if (rawShippingDataResult.success && rawShippingDataResult.data) {
+        const data = rawShippingDataResult.data || []
+        console.log('Raw shipping data fetched:', {
+          count: data.length,
+          sampleRecord: data[0],
+          sampleKeys: data[0] ? Object.keys(data[0]).slice(0, 15) : []
+        })
+        setRawShippingData(data)
+      } else {
+        console.error('Failed to fetch raw shipping data:', rawShippingDataResult.error)
+      }
 
       // Set summary metrics from API
       if (summaryData.success) {
         // Handle both formats: summaryData.metrics or summaryData.data
-        const metrics = summaryData.metrics || summaryData.data || {}
+        const data = summaryData.data as any
+        const metrics = (data && typeof data === 'object' && 'metrics' in data) ? data.metrics : (data || {})
         setSummaryMetrics({
-          syncedOrders: metrics.syncedOrders || metrics.total_orders || 0,
-          gmv: metrics.gmv || metrics.total_gmv || 0,
-          inTransitPercent: metrics.inTransitPercent || 0,
-          deliveryPercent: metrics.deliveryPercent || metrics.delivery_rate || 0,
-          rtoPercent: metrics.rtoPercent || metrics.rto_rate || 0,
-          inTransitOrders: metrics.inTransitOrders || 0,
-          deliveredOrders: metrics.deliveredOrders || metrics.total_delivered || 0,
-          rtoOrders: metrics.rtoOrders || metrics.total_rto || 0,
-          undeliveredOrders: metrics.undeliveredOrders || 0,
+          syncedOrders: metrics?.syncedOrders || metrics?.total_orders || 0,
+          gmv: metrics?.gmv || metrics?.total_gmv || 0,
+          inTransitPercent: metrics?.inTransitPercent || 0,
+          deliveryPercent: metrics?.deliveryPercent || metrics?.delivery_rate || 0,
+          rtoPercent: metrics?.rtoPercent || metrics?.rto_rate || 0,
+          inTransitOrders: metrics?.inTransitOrders || 0,
+          deliveredOrders: metrics?.deliveredOrders || metrics?.total_delivered || 0,
+          rtoOrders: metrics?.rtoOrders || metrics?.total_rto || 0,
+          undeliveredOrders: metrics?.undeliveredOrders || 0,
         })
       }
 
@@ -375,57 +405,8 @@ function AnalyticsDashboardContent() {
     }
   }
 
-  // Fetch raw shipping data for daily aggregation and daily delivery performance table
-  useEffect(() => {
-    const fetchRawShippingData = async () => {
-      if (!sessionId) return
-      
-      try {
-        const filterParams = new URLSearchParams()
-        filterParams.append('sessionId', sessionId)
-        if (filters.startDate) filterParams.append('startDate', filters.startDate)
-        if (filters.endDate) filterParams.append('endDate', filters.endDate)
-        if (filters.orderStatus !== 'All') filterParams.append('orderStatus', filters.orderStatus)
-        if (filters.paymentMethod !== 'All') filterParams.append('paymentMethod', filters.paymentMethod)
-        if (filters.channel !== 'All') filterParams.append('channel', filters.channel)
-        if (filters.sku && filters.sku !== 'All') {
-          const skuArray = Array.isArray(filters.sku) ? filters.sku : [filters.sku]
-          skuArray.forEach(sku => filterParams.append('sku', sku))
-        }
-        if (filters.productName && filters.productName !== 'All') {
-          const productNameArray = Array.isArray(filters.productName) ? filters.productName : [filters.productName]
-          productNameArray.forEach(productName => filterParams.append('productName', productName))
-        }
-
-        const { getRawShippingData } = await import('@/lib/api-client')
-        const result = await getRawShippingData(sessionId, {
-          startDate: filters.startDate,
-          endDate: filters.endDate,
-          orderStatus: filters.orderStatus !== 'All' ? filters.orderStatus : undefined,
-          paymentMethod: filters.paymentMethod !== 'All' ? filters.paymentMethod : undefined,
-          channel: filters.channel !== 'All' ? filters.channel : undefined,
-          sku: filters.sku !== 'All' ? (Array.isArray(filters.sku) ? filters.sku : [filters.sku]) : undefined,
-          productName: filters.productName !== 'All' ? (Array.isArray(filters.productName) ? filters.productName : [filters.productName]) : undefined,
-        })
-        
-        if (result.success && result.data) {
-          const data = result.data || []
-          console.log('Raw shipping data fetched:', {
-            count: data.length,
-            sampleRecord: data[0],
-            sampleKeys: data[0] ? Object.keys(data[0]).slice(0, 15) : []
-          })
-          setRawShippingData(data)
-        } else {
-          console.error('Failed to fetch raw shipping data:', result.error)
-        }
-      } catch (error) {
-        console.error('Error fetching raw shipping data:', error)
-      }
-    }
-
-    fetchRawShippingData()
-  }, [sessionId, filters])
+  // Note: rawShippingData is now fetched in fetchAllData() along with other analytics data
+  // This ensures Day and Week views load data at the same time
 
   // Helper function to format date
   const formatDate = (dateStr: string, isDayView: boolean = false): string => {
@@ -3047,7 +3028,7 @@ function AnalyticsDashboardContent() {
                 </div>
               ) : isDeliveryPerformanceVisible ? (
                 <div className="flex items-center justify-center h-[200px] text-gray-400">
-                  {loadingData 
+                  {loadingData
                     ? 'Loading data...'
                     : (tableView === 'day' && rawShippingData.length === 0)
                       ? 'No daily data available'

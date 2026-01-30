@@ -1498,17 +1498,20 @@ def compute_single_analytics(
         return None
 
 
-def compute_all_analytics(data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def compute_all_analytics(data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Compute all analytics from provided data
+    Compute all analytics from provided data with parallel execution and caching
     
     Args:
         data: List of shipping data dictionaries
         filters: Optional dictionary of filter parameters. Must be None or a dict.
+        session_id: Optional session ID to cache results
     
     Returns:
         {'success': bool, 'error': str (if failed)}
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
     # Safety check: ensure filters is None or a dictionary
     if filters is not None and not isinstance(filters, dict):
         print(f"Warning: filters must be None or dict, got {type(filters)}. Setting to None.")
@@ -1524,15 +1527,29 @@ def compute_all_analytics(data: List[Dict[str, Any]], filters: Optional[Dict[str
         
         print(f"✅ [compute_all_analytics] Processing {len(data)} records")
         
-        # Convert to DataFrame
-        try:
-            df = pd.DataFrame(data)
-            print(f"✅ [compute_all_analytics] Converted to DataFrame: {df.shape[0]} rows, {df.shape[1]} columns")
-        except Exception as e:
-            print(f"❌ [compute_all_analytics] Error converting data to DataFrame: {e}")
-            print(f"   First record type: {type(data[0]) if data else 'N/A'}")
-            print(f"   First record keys: {list(data[0].keys()) if data and isinstance(data[0], dict) else 'N/A'}")
-            raise
+        # CHECK FOR CACHED DATAFRAME FIRST
+        df = None
+        if session_id:
+            from backend.data_store import get_dataframe
+            df = get_dataframe(session_id)
+            if df is not None:
+                print(f"✅ [compute_all_analytics] Using cached DataFrame: {df.shape[0]} rows, {df.shape[1]} columns")
+        
+        # If no cached DataFrame, convert from data
+        if df is None:
+            try:
+                df = pd.DataFrame(data)
+                print(f"✅ [compute_all_analytics] Converted to DataFrame: {df.shape[0]} rows, {df.shape[1]} columns")
+                
+                # Cache the DataFrame for future use
+                if session_id:
+                    from backend.data_store import store_dataframe
+                    store_dataframe(session_id, df)
+            except Exception as e:
+                print(f"❌ [compute_all_analytics] Error converting data to DataFrame: {e}")
+                print(f"   First record type: {type(data[0]) if data else 'N/A'}")
+                print(f"   First record keys: {list(data[0].keys()) if data and isinstance(data[0], dict) else 'N/A'}")
+                raise
         
         # Apply filters if provided
         if filters:
@@ -1545,28 +1562,48 @@ def compute_all_analytics(data: List[Dict[str, Any]], filters: Optional[Dict[str
         analytics_types = [
             'weekly-summary', 'ndr-weekly', 'state-performance',
             'category-share', 'cancellation-tracker', 'channel-share',
-            'payment-method', 'product-analysis'
+            'payment-method', 'product-analysis',
+            'summary-metrics', 'order-statuses', 'payment-method-outcome'
         ]
         
-        # Compute all analytics
-        for analytics_type in analytics_types:
-            compute_func = {
-                'weekly-summary': compute_weekly_summary,
-                'ndr-weekly': compute_ndr_weekly,
-                'state-performance': compute_state_performance,
-                'category-share': compute_category_share,
-                'cancellation-tracker': compute_cancellation_tracker,
-                'channel-share': compute_channel_share,
-                'payment-method': compute_payment_method,
-                'product-analysis': compute_product_analysis,
-            }[analytics_type]
-            
-            try:
-                result = compute_func(df.copy())
-                print(f"✅ Computed '{analytics_type}' analytics")
-            except Exception as e:
-                print(f"⚠️  Error computing '{analytics_type}': {e}")
+        compute_funcs = {
+            'weekly-summary': compute_weekly_summary,
+            'ndr-weekly': compute_ndr_weekly,
+            'state-performance': compute_state_performance,
+            'category-share': compute_category_share,
+            'cancellation-tracker': compute_cancellation_tracker,
+            'channel-share': compute_channel_share,
+            'payment-method': compute_payment_method,
+            'product-analysis': compute_product_analysis,
+            'summary-metrics': compute_summary_metrics,
+            'order-statuses': compute_order_statuses,
+            'payment-method-outcome': compute_payment_method_outcome,
+        }
         
+        # PARALLEL EXECUTION with ThreadPoolExecutor
+        print(f"🚀 [compute_all_analytics] Starting parallel computation with 4 workers...")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            # Submit all tasks
+            future_to_type = {
+                executor.submit(compute_funcs[analytics_type], df.copy()): analytics_type
+                for analytics_type in analytics_types
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_type):
+                analytics_type = future_to_type[future]
+                try:
+                    result = future.result()
+                    print(f"✅ Computed '{analytics_type}' analytics")
+                    
+                    # Store in cache if session_id provided
+                    if session_id:
+                        from backend.data_store import store_analytics
+                        store_analytics(session_id, analytics_type, result, filters)
+                except Exception as e:
+                    print(f"⚠️  Error computing '{analytics_type}': {e}")
+        
+        print(f"✅ [compute_all_analytics] All analytics computed successfully")
         return {'success': True}
     
     except Exception as e:

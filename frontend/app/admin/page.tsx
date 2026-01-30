@@ -18,6 +18,8 @@ export default function AdminDashboard() {
   const [googleDriveFiles, setGoogleDriveFiles] = useState<any[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [isGoogleDriveConfigured, setIsGoogleDriveConfigured] = useState<boolean>(false)
+  const [readingFileId, setReadingFileId] = useState<string | null>(null)
+  const [readingStatus, setReadingStatus] = useState<string>('')
   const router = useRouter()
 
   useEffect(() => {
@@ -114,14 +116,19 @@ export default function AdminDashboard() {
   }
 
   const handleGoogleDriveFileRead = async (fileId: string, fileName: string, sheetType: string = 'shipping') => {
+    // Set loading state
+    setReadingFileId(fileId)
+    setReadingStatus(`Reading "${fileName}" from Google Drive...`)
+    
     try {
-      const loadingMessage = `Reading "${fileName}" from Google Drive...\nPlease wait, this may take a moment.`
-      alert(loadingMessage)
-
       const { readGoogleDriveFile, computeAnalytics } = await import('@/lib/api-client')
+      
+      setReadingStatus(`Downloading file from Google Drive...`)
       const result = await readGoogleDriveFile(fileId, sheetType)
 
       if (!result.success) {
+        setReadingStatus('')
+        setReadingFileId(null)
         alert(result.error || 'Failed to read file from Google Drive')
         return
       }
@@ -132,6 +139,8 @@ export default function AdminDashboard() {
         if (sheetType === 'shipping') {
           if (!data.sessionId) {
             console.error('Error: sessionId not found in response', data)
+            setReadingStatus('')
+            setReadingFileId(null)
             alert('Error: Session ID not returned from server. Please try again.')
             return
           }
@@ -139,6 +148,8 @@ export default function AdminDashboard() {
           // Store session ID in localStorage
           localStorage.setItem('analyticsSessionId', data.sessionId)
           console.log('Session ID stored:', data.sessionId)
+          
+          setReadingStatus('Computing analytics...')
           
           // Compute analytics in background
           try {
@@ -148,36 +159,52 @@ export default function AdminDashboard() {
             // Don't fail the request - analytics can be computed later
           }
           
-          let message = `File "${data.fileName}" read successfully from Google Drive!\n\n` +
+          setReadingStatus('')
+          setReadingFileId(null)
+          
+          // Show success message
+          alert(
+            `File "${data.fileName}" read successfully!\n\n` +
             `Total Rows: ${data.totalRows}\n` +
             `Original Rows: ${data.originalRows}\n` +
             `Duplicates Removed: ${data.duplicatesRemoved}\n` +
             `Total Columns: ${data.totalColumns}\n\n` +
-            `✅ File parsed and saved to Redis (30 min TTL)\n` +
-            `📊 Computing analytics...`
-          
-          alert(message)
+            `✅ File parsed and saved\n` +
+            `📊 Analytics computed`
+          )
           
           // Redirect to analytics dashboard after successful parsing
           setTimeout(() => {
             router.push(`/admin/analytics?sessionId=${data.sessionId}`)
-          }, 1500)
+          }, 1000)
         } else {
-          let message = `File "${data.fileName}" read successfully from Google Drive!\n\n` +
+          setReadingStatus('')
+          setReadingFileId(null)
+          
+          alert(
+            `File "${data.fileName}" read successfully!\n\n` +
             `Total Rows: ${data.totalRows}\n` +
             `Original Rows: ${data.originalRows}\n` +
             `Duplicates Removed: ${data.duplicatesRemoved}\n` +
-            `Total Columns: ${data.totalColumns}\n\n` +
-            `✅ File parsed successfully`
-          
-          alert(message)
+            `Total Columns: ${data.totalColumns}`
+          )
         }
       } else {
         console.error('Error: No data in response', result)
+        setReadingStatus('')
+        setReadingFileId(null)
         alert('Error: No data returned from server. Please try again.')
       }
-    } catch (error) {
-      alert('An error occurred while reading the file from Google Drive. Please try again.')
+    } catch (error: any) {
+      setReadingStatus('')
+      setReadingFileId(null)
+      
+      // Check if it's a timeout error
+      if (error.message?.includes('timeout') || error.message?.includes('Timeout')) {
+        alert('Request timed out. The file might be too large. Please try again or contact support.')
+      } else {
+        alert(`An error occurred while reading the file: ${error.message || 'Unknown error'}`)
+      }
     }
   }
 
@@ -303,6 +330,30 @@ export default function AdminDashboard() {
             </div>
           </div>
 
+          {/* Loading overlay for file reading */}
+          {readingFileId && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="bg-black/90 backdrop-blur-lg rounded-xl p-8 border border-gray-700/50 max-w-md w-full mx-4"
+              >
+                <div className="flex flex-col items-center justify-center space-y-4">
+                  <svg className="animate-spin h-12 w-12 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <p className="text-white text-lg font-semibold text-center">
+                    {readingStatus || 'Processing file...'}
+                  </p>
+                  <p className="text-gray-400 text-sm text-center">
+                    This may take a few moments for large files. Please don't close this page.
+                  </p>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
           {loadingFiles ? (
             <div className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50">
               <p className="text-gray-400">Loading files from Google Drive...</p>
@@ -341,15 +392,49 @@ export default function AdminDashboard() {
                   <div className="flex gap-2 mt-4">
                     <button
                       onClick={() => handleGoogleDriveFileRead(file.id, file.name, 'shipping')}
-                      className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition-all"
+                      disabled={readingFileId !== null}
+                      className={`flex-1 px-3 py-2 text-white rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                        readingFileId === file.id
+                          ? 'bg-blue-500 cursor-wait'
+                          : readingFileId !== null
+                          ? 'bg-gray-600 cursor-not-allowed opacity-50'
+                          : 'bg-blue-600 hover:bg-blue-700'
+                      }`}
                     >
-                      Read as Shipping
+                      {readingFileId === file.id ? (
+                        <>
+                          <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          Reading...
+                        </>
+                      ) : (
+                        'Read as Shipping'
+                      )}
                     </button>
                     <button
                       onClick={() => handleGoogleDriveFileRead(file.id, file.name, 'meta_campaign')}
-                      className="flex-1 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-semibold transition-all"
+                      disabled={readingFileId !== null}
+                      className={`flex-1 px-3 py-2 text-white rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                        readingFileId === file.id
+                          ? 'bg-purple-500 cursor-wait'
+                          : readingFileId !== null
+                          ? 'bg-gray-600 cursor-not-allowed opacity-50'
+                          : 'bg-purple-600 hover:bg-purple-700'
+                      }`}
                     >
-                      Read as Meta
+                      {readingFileId === file.id ? (
+                        <>
+                          <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          Reading...
+                        </>
+                      ) : (
+                        'Read as Meta'
+                      )}
                     </button>
                   </div>
                 </motion.div>

@@ -74,8 +74,8 @@ async def compute_analytics(request: ComputeAnalyticsRequest):
                 detail=f"No data found for session {request.sessionId}. Please read the shipping file first."
             )
         
-        # Compute analytics
-        result = compute_all_analytics(data, request.filters)
+        # Compute analytics WITH session_id for caching
+        result = compute_all_analytics(data, request.filters, request.sessionId)
         
         if not result.get('success'):
             raise HTTPException(
@@ -103,16 +103,37 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
         if not sessionId:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        # Get data from in-memory store
-        data = get_shipping_data(sessionId)
-        if not data or len(data) == 0:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
-            )
+        # CHECK CACHE FIRST
+        from backend.data_store import get_analytics
+        filter_filters = {}
+        if channel:
+            filter_filters['channel'] = channel
+        if sku:
+            filter_filters['sku'] = sku
+        cached_result = get_analytics(sessionId, 'filter-options', filter_filters if filter_filters else None)
         
-        # Convert to DataFrame for easier filtering
-        df = pd.DataFrame(data)
+        if cached_result is not None:
+            print(f"✅ Using cached filter-options for session {sessionId}")
+            return cached_result
+        
+        # Get cached DataFrame if available
+        from backend.data_store import get_dataframe
+        df = get_dataframe(sessionId)
+        
+        if df is None:
+            # Fallback to data conversion
+            data = get_shipping_data(sessionId)
+            if not data or len(data) == 0:
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
+                )
+            df = pd.DataFrame(data)
+            # Cache it for next time
+            from backend.data_store import store_dataframe
+            store_dataframe(sessionId, df)
+        else:
+            print(f"✅ Using cached DataFrame for filter-options")
         
         # Debug: Print available columns for SKU detection
         print(f"📋 Available columns for filter-options (first 30): {df.columns.tolist()[:30]}")
@@ -120,12 +141,21 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
         # Apply channel filter if provided
         if channel and channel != 'All':
             channel_col = None
-            for col in ['channel', 'Channel', 'channel__']:
+            # Check multiple possible column name variations
+            for col in ['channel', 'Channel', 'channel__', 'Channel__', 'sales_channel', 'Sales Channel']:
                 if col in df.columns:
                     channel_col = col
                     break
             if channel_col:
-                df = df[df[channel_col] == channel]
+                # Try exact match first, then case-insensitive match
+                filtered_df = df[df[channel_col].astype(str).str.strip() == channel]
+                if filtered_df.empty:
+                    # Try case-insensitive match
+                    filtered_df = df[df[channel_col].astype(str).str.strip().str.lower() == channel.lower()]
+                df = filtered_df
+                print(f"✅ Applied channel filter '{channel}' on column '{channel_col}': {len(df)} rows remaining")
+            else:
+                print(f"⚠️ Channel filter '{channel}' requested but no channel column found in DataFrame")
         
         # Apply SKU filter if provided
         if sku and sku != 'All':
@@ -139,8 +169,31 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
             if sku_col:
                 df = df[df[sku_col] == sku]
         
+        # If DataFrame is empty after filtering, return empty filter options instead of 404
+        # This is a valid state when filters don't match any data
         if df.empty:
-            raise HTTPException(status_code=404, detail="No data found after filtering")
+            print(f"⚠️ No data found after filtering (channel={channel}, sku={sku}), returning empty filter options")
+            result = {
+                "success": True,
+                "channels": [],
+                "skus": [],
+                "skusTop10": [],
+                "productNames": [],
+                "productNamesTop10": [],
+                "statuses": sorted([
+                    'CANCELED', 'DELIVERED', 'DESTROYED', 'IN TRANSIT',
+                    'IN TRANSIT-AT DESTINATION HUB', 'LOST', 'OUT FOR DELIVERY',
+                    'OUT FOR PICKUP', 'PICKED UP', 'PICKUP EXCEPTION',
+                    'REACHED BACK AT_SELLER_CITY', 'REACHED DESTINATION HUB',
+                    'RTO DELIVERED', 'RTO IN TRANSIT', 'RTO INITIATED', 'RTO NDR',
+                    'UNDELIVERED', 'UNDELIVERED-1st Attempt', 'UNDELIVERED-2nd Attempt',
+                    'UNDELIVERED-3rd Attempt', 'UNTRACEABLE'
+                ]),
+            }
+            # Cache the empty result
+            from backend.data_store import store_analytics
+            store_analytics(sessionId, 'filter-options', result, filter_filters if filter_filters else None)
+            return result
         
         # Extract unique values
         channels = set()
@@ -229,6 +282,10 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
             "productNamesTop10": [p[0] for p in product_top10],
             "statuses": sorted(list(statuses)),
         }
+        
+        # Cache the result
+        from backend.data_store import store_analytics
+        store_analytics(sessionId, 'filter-options', result, filter_filters if filter_filters else None)
         
         return result
     except HTTPException:
@@ -399,8 +456,16 @@ async def get_analytics(
                 detail=f"Use the dedicated endpoint for '{analytics_type}': /api/analytics/{analytics_type}"
             )
         
-        # Compute analytics on-demand
-        print(f"Computing analytics '{analytics_type}' for session {sessionId}...")
+        # CHECK CACHE FIRST
+        from backend.data_store import get_analytics
+        cached_result = get_analytics(sessionId, analytics_type, filter_dict)
+        
+        if cached_result is not None:
+            print(f"✅ Using cached analytics '{analytics_type}' for session {sessionId}")
+            return cached_result  # Return in same format as compute_single_analytics
+        
+        # Cache miss - compute on demand
+        print(f"⚠️  Cache miss for '{analytics_type}' - computing on demand...")
         computed_data = compute_single_analytics(data, analytics_type, filter_dict)
         
         if computed_data is None:
@@ -408,6 +473,11 @@ async def get_analytics(
                 status_code=404, 
                 detail=f"Analytics type '{analytics_type}' is not supported or could not be computed"
             )
+        
+        # Store in cache for next time
+        if computed_data and sessionId:
+            from backend.data_store import store_analytics
+            store_analytics(sessionId, analytics_type, computed_data, filter_dict)
         
         return computed_data
     except HTTPException:

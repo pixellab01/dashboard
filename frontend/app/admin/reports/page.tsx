@@ -171,7 +171,7 @@ function ReportsPageContent() {
       const result = await fetchAnalytics('weekly-summary', { sessionId: currentSessionId })
       
       if (result.success && result.data) {
-        setAnalyticsMetrics(result.data)
+        setAnalyticsMetrics(Array.isArray(result.data) ? result.data as AnalyticsMetrics[] : [])
         console.log(`Fetched ${result.count || 0} weekly summary records`)
       }
     } catch (error) {
