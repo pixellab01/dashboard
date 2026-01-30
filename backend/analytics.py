@@ -1582,7 +1582,7 @@ def compute_all_analytics(data: List[Dict[str, Any]], filters: Optional[Dict[str
         
         # PARALLEL EXECUTION with ThreadPoolExecutor
         print(f"🚀 [compute_all_analytics] Starting parallel computation with 4 workers...")
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             # Submit all tasks
             future_to_type = {
                 executor.submit(compute_funcs[analytics_type], df.copy()): analytics_type
