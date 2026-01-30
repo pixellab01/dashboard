@@ -206,6 +206,7 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
                     'UNDELIVERED-3rd Attempt', 'UNTRACEABLE'
                 ]),
             }
+            
             # Cache the empty result
             from backend.data_store import store_analytics
             store_analytics(sessionId, 'filter-options', result, filter_filters if filter_filters else None)
