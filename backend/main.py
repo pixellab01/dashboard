@@ -6,9 +6,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
+import logging
+import time
 import uvicorn
 
-from backend.analytics import compute_all_analytics, filter_shipping_data, compute_single_analytics
+from backend.analytics import (
+    compute_single_analytics,
+    compute_all_analytics,
+    filter_shipping_data,
+    sanitize_for_json,
+    normalize_dataframe,
+)
 from backend.data_store import get_shipping_data, get_shipping_metadata
 import pandas as pd
 import uuid
@@ -17,6 +25,16 @@ import uuid
 from backend.api import auth, google_drive, admin, stats
 
 app = FastAPI(title="Analytics Dashboard API", version="1.0.0")
+
+# Simple request timing to identify slow endpoints quickly
+@app.middleware("http")
+async def timing_middleware(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - t0) * 1000
+    logging.info("%s %s -> %d (%.1fms)", request.method, request.url.path, response.status_code, ms)
+    response.headers["X-Process-Time-ms"] = f"{ms:.1f}"
+    return response
 
 # CORS middleware
 app.add_middleware(
@@ -74,19 +92,17 @@ async def compute_analytics(request: ComputeAnalyticsRequest):
                 detail=f"No data found for session {request.sessionId}. Please read the shipping file first."
             )
         
-        # Compute analytics WITH session_id for caching
+        # Compute & cache analytics for this session
         result = compute_all_analytics(data, request.filters, request.sessionId)
-        
-        if not result.get('success'):
-            raise HTTPException(
-                status_code=500,
-                detail=result.get('error', 'Failed to compute analytics')
-            )
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail="Failed to compute analytics")
         
         return {
             "success": True,
             "message": "Analytics computed successfully",
             "sessionId": request.sessionId,
+            "computed": result.get("computed", 0),
+            "errors": result.get("errors", {}),
         }
     except HTTPException:
         raise
@@ -215,14 +231,14 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
         sku_cols = ['master__s_k_u', 'master_s_k_u', 'master_sku', 'sku', 
                    'channel__s_k_u', 'channel_s_k_u', 'channel_sku', 'channel__sku']
         sku_col_found = None
+        invalid_tokens = {'none', 'n/a', 'na', 'null', 'undefined', ''}
         for col in sku_cols:
             if col in df.columns:
                 sku_col_found = col
                 print(f"✅ Found SKU column: {col}")
-                for val in df[col].dropna().astype(str):
-                    val = val.strip()
-                    if val and val.lower() not in ['none', 'n/a', 'na', 'null', 'undefined', '']:
-                        sku_counts[val] = sku_counts.get(val, 0) + 1
+                s = df[col].dropna().astype(str).str.strip()
+                s = s[(s != "") & (~s.str.lower().isin(invalid_tokens))]
+                sku_counts = s.value_counts().to_dict()
                 break  # Use first found column
         
         if not sku_col_found:
@@ -237,10 +253,9 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
             if col in df.columns:
                 product_col_found = col
                 print(f"✅ Found Product Name column: {col}")
-                for val in df[col].dropna().astype(str):
-                    val = val.strip()
-                    if val and val.lower() not in ['none', 'n/a', 'na', 'null', 'undefined', '']:
-                        product_name_counts[val] = product_name_counts.get(val, 0) + 1
+                s = df[col].dropna().astype(str).str.strip()
+                s = s[(s != "") & (~s.str.lower().isin(invalid_tokens))]
+                product_name_counts = s.value_counts().to_dict()
                 break  # Use first found column
         
         if not product_col_found:
@@ -252,10 +267,9 @@ async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku:
         status_cols = ['delivery_status', 'status', 'original_status', 'current_status']
         for col in status_cols:
             if col in df.columns:
-                for val in df[col].dropna().astype(str):
-                    val = val.strip().upper()
-                    if val and val not in ['NONE', 'N/A', 'NA', 'NULL', 'UNDEFINED', '', "'"]:
-                        statuses.add(val)
+                s = df[col].dropna().astype(str).str.strip().str.upper()
+                s = s[(s != "") & (~s.isin(['NONE', 'N/A', 'NA', 'NULL', 'UNDEFINED', "'"]))]
+                statuses.update(s.unique().tolist())
         
         # Predefined statuses
         predefined_statuses = [
@@ -338,47 +352,56 @@ async def get_raw_shipping(
         if productName:
             filters['productName'] = productName
         
-        # Apply filters if any
-        if filters:
-            df = pd.DataFrame(data)
-            filtered_df = filter_shipping_data(df, filters)
-            # Replace NaN values with None for JSON serialization
-            filtered_df = filtered_df.where(pd.notna(filtered_df), None)
-            filtered_data = filtered_df.to_dict('records')
-        else:
-            filtered_data = data
-        
-        # Clean NaN values in filtered_data for JSON serialization
-        def clean_nan(obj):
-            if isinstance(obj, dict):
-                return {k: clean_nan(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [clean_nan(item) for item in obj]
-            elif isinstance(obj, float) and (pd.isna(obj) or obj != obj):  # NaN check
-                return None
-            return obj
-        
-        filtered_data = clean_nan(filtered_data)
-        
-        # Apply pagination if limit is provided
+        # Pagination setup (do this early so we can avoid converting huge payloads)
+        page = page or 1
         if limit:
             limit = min(limit, 500)  # Max 500 per page
-            page = page or 1
             start_index = (page - 1) * limit
             end_index = start_index + limit
-            paginated_data = filtered_data[start_index:end_index]
-            total_pages = (len(filtered_data) + limit - 1) // limit
         else:
-            paginated_data = filtered_data
-            total_pages = 1
+            start_index = None
+            end_index = None
+        
+        # Apply filters if any (requires normalized dataframe)
+        if filters:
+            from backend.data_store import get_dataframe, store_dataframe
+            df = get_dataframe(sessionId)
+            if df is None:
+                df = pd.DataFrame(data)
+            
+            # Ensure df is normalized for filter_shipping_data()
+            if "_order_date" not in df.columns or "_status" not in df.columns:
+                df = normalize_dataframe(df)
+                store_dataframe(sessionId, df)
+
+            filtered_df = filter_shipping_data(df, filters)
+            total = len(filtered_df)
+            if limit:
+                page_df = filtered_df.iloc[start_index:end_index]
+                total_pages = (total + limit - 1) // limit
+            else:
+                page_df = filtered_df
+                total_pages = 1
+
+            # Replace NaN values with None for JSON serialization (only for current page)
+            page_df = page_df.where(pd.notna(page_df), None)
+            paginated_data = sanitize_for_json(page_df.to_dict('records'))
+        else:
+            total = len(data)
+            if limit:
+                paginated_data = sanitize_for_json(data[start_index:end_index])
+                total_pages = (total + limit - 1) // limit
+            else:
+                paginated_data = sanitize_for_json(data)
+                total_pages = 1
         
         return {
             "success": True,
             "data": paginated_data,
             "count": len(paginated_data),
-            "total": len(filtered_data),
+            "total": total,
             "page": page or 1,
-            "limit": limit or len(filtered_data),
+            "limit": limit or total,
             "totalPages": total_pages,
         }
     except HTTPException:
@@ -462,11 +485,11 @@ async def get_analytics(
         
         if cached_result is not None:
             print(f"✅ Using cached analytics '{analytics_type}' for session {sessionId}")
-            return cached_result  # Return in same format as compute_single_analytics
+            return sanitize_for_json(cached_result)  # ensure JSON-safe even for legacy cached values
         
         # Cache miss - compute on demand
         print(f"⚠️  Cache miss for '{analytics_type}' - computing on demand...")
-        computed_data = compute_single_analytics(data, analytics_type, filter_dict)
+        computed_data = compute_single_analytics(data, analytics_type, filter_dict, sessionId)
         
         if computed_data is None:
             raise HTTPException(
@@ -475,13 +498,16 @@ async def get_analytics(
             )
         
         # Store in cache for next time
-        if computed_data and sessionId:
+        if computed_data is not None and sessionId:
             from backend.data_store import store_analytics
             store_analytics(sessionId, analytics_type, computed_data, filter_dict)
         
-        return computed_data
+        return sanitize_for_json(computed_data)
     except HTTPException:
         raise
+    except ValueError as e:
+        # Unsupported analytics types etc.
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error getting analytics: {e}")
         import traceback
