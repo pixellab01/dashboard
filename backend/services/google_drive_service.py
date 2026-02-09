@@ -177,6 +177,43 @@ class GoogleDriveService:
             print(f"[Google Drive] Error listing files: {e}")
             raise
     
+    def read_file_to_dataframe(self, file_id: str) -> Optional[pd.DataFrame]:
+        """
+        Read a file from Google Drive and return its content as a pandas DataFrame.
+        """
+        service = self.get_service()
+        
+        try:
+            # Get file metadata to determine file type
+            file_metadata = service.files().get(fileId=file_id, fields='name, mimeType').execute()
+            file_name = file_metadata.get('name', '')
+            mime_type = file_metadata.get('mimeType', '')
+
+            # Download file content
+            request = service.files().get_media(fileId=file_id)
+            file_content = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+            
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            
+            file_content.seek(0)
+            
+            # Determine file type and read into DataFrame
+            if 'csv' in mime_type or file_name.endswith('.csv'):
+                df = pd.read_csv(file_content, low_memory=False)
+            elif 'ms-excel' in mime_type or file_name.endswith('.xls'):
+                df = pd.read_excel(file_content, engine='xlrd')
+            else: # Assumes xlsx
+                df = pd.read_excel(file_content, engine='openpyxl')
+                
+            return df
+            
+        except Exception as e:
+            print(f"[Google Drive] Error reading file to DataFrame: {e}")
+            return None
+
     def read_excel_file(self, file_id: str) -> Dict[str, Any]:
         """
         Read Excel file from Google Drive and parse it

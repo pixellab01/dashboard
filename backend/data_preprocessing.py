@@ -19,7 +19,7 @@ from typing import Dict
 def normalize_keys(df: pd.DataFrame) -> pd.DataFrame:
     def to_snake(name: str) -> str:
         name = str(name).strip()
-        name = re.sub(r"(?<!^)(?=[A-Z])", "_", name)
+        name = re.sub(r"(?<!^)(?<!\s)(?=[A-Z])", "_", name)
         name = name.lower()
         name = re.sub(r"\s+", "_", name)
         name = re.sub(r"[^a-z0-9_]", "", name)
@@ -125,8 +125,8 @@ def preprocess_shipping_data(df: pd.DataFrame) -> pd.DataFrame:
                     .astype(str)
                     .str.replace(r"[^0-9.-]", "", regex=True)
                     .replace("", np.nan)
-                    .astype(float)
                 )
+                series = pd.to_numeric(series, errors="coerce")
                 if series.notna().any():
                     df[target] = series
                     break
@@ -148,21 +148,72 @@ def preprocess_shipping_data(df: pd.DataFrame) -> pd.DataFrame:
     # --------------------------------------------------------
     # Category / channel / identifiers
     # --------------------------------------------------------
+    # --------------------------------------------------------
+    # Category / channel / identifiers
+    # --------------------------------------------------------
+    
+    # Robust Column Mapping Helper
+    def resolve_mapped_col(df, target_name, candidates):
+        """Find the first matching column from candidates in the dataframe that has data."""
+        # Check all candidates (including target_name) for data
+        all_candidates = []
+        if target_name in df.columns:
+            all_candidates.append(target_name)
+        
+        # Add other candidates if they exist
+        for col in candidates:
+            if col in df.columns and col != target_name:
+                all_candidates.append(col)
+        
+        # First pass: Look for column with actual data (non-null)
+        for col in all_candidates:
+            if df[col].notna().any():
+                return df[col]
+        
+        # Second pass: If no data found, return the first one that exists (to preserve structure)
+        if all_candidates:
+            return df[all_candidates[0]]
+        
+        # 3. Fallback: Check for partial match (e.g. "payment" in column name)
+        # Only for specific targets where loose matching is safe
+        if target_name == "payment_method":
+             for col in df.columns:
+                if "payment" in str(col).lower() and "method" in str(col).lower():
+                    if df[col].notna().any():
+                        return df[col]
+                if "payment" in str(col).lower() and "type" in str(col).lower():
+                    if df[col].notna().any():
+                        return df[col]
+                # Very loose fallback
+                if "payment" in str(col).lower() and len(df.columns) < 50: # Safety check
+                     if df[col].notna().any():
+                        return df[col]
+
+        return pd.Series(np.nan, index=df.index)
+
+    # Define mappings (simplified from analytics.py to match normalized snake_case names)
+    # Note: normalize_keys() has already run, so we expect snake_case inputs
+    MAPPINGS = {
+        "payment_method": ["payment__method", "payment_method", "payment_type", "payment_mode", "method_of_payment" , "Payment Method"],
+        "product_name": ["product__name", "product_name", "item_name"],
+        "channel": ["channel", "source", "platform"],
+        "sku": ["channel__s_k_u", "master__s_k_u", "master_s_k_u", "channel_s_k_u", "sku", "item_sku", "variant_sku"]
+    }
+
     df["category"] = (
         safe_col(df, "product_category")
         .combine_first(safe_col(df, "category"))
         .fillna("Uncategorized")
     )
 
-    df["channel"] = safe_col(df, "channel")
-    df["sku"] = (
-        safe_col(df, "master_s_k_u")
-        .combine_first(safe_col(df, "channel_s_k_u"))
-        .combine_first(safe_col(df, "sku"))
-    )
+    df["channel"] = resolve_mapped_col(df, "channel", MAPPINGS["channel"])
+    df["sku"] = resolve_mapped_col(df, "sku", MAPPINGS["sku"])
 
-    df["product_name"] = safe_col(df, "product_name")
-    df["payment_method"] = safe_col(df, "payment_method")
+    # Ensure product_name is found
+    df["product_name"] = resolve_mapped_col(df, "product_name", MAPPINGS["product_name"])
+    
+    # Robust payment method resolution
+    df["payment_method"] = resolve_mapped_col(df, "payment_method", MAPPINGS["payment_method"])
 
     # --------------------------------------------------------
     # Status normalization
@@ -199,12 +250,12 @@ def preprocess_shipping_data(df: pd.DataFrame) -> pd.DataFrame:
     state = safe_col(df, "state", "").fillna("")
     pin   = safe_col(df, "pincode", "").fillna("")
 
-    full_addr = addr1 + " " + addr2 + " " + city + " " + state + " " + pin
+    full_addr = addr1 + " " + addr2
 
     df["address_quality"] = np.select(
         [
-            addr1.eq("") | full_addr.str.len().lt(10),
-            full_addr.str.len().lt(30),
+            addr1.eq("") | full_addr.str.len().le(20),
+            (full_addr.str.len().gt(20)) & (full_addr.str.len().le(40)),
         ],
         ["INVALID", "SHORT"],
         default="GOOD",

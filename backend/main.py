@@ -1,27 +1,19 @@
 """
-FastAPI Application for Analytics Dashboard
+FastAPI Application for Analytics Dashboard (Optimized)
 """
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import logging
 import time
 import uvicorn
-
-from backend.analytics import (
-    compute_single_analytics,
-    compute_all_analytics,
-    filter_shipping_data,
-    sanitize_for_json,
-    normalize_dataframe,
-)
-from backend.data_store import get_shipping_data, get_shipping_metadata
 import pandas as pd
+import polars as pl
 import uuid
 
-# Import API routers
+from backend.data_store import get_dataframe
+from backend.analytics import compute_all_analytics, filter_shipping_data_pl, COLUMN_MAP # Using Polars filter and shared column map
 from backend.api import auth, google_drive, admin, stats
 
 app = FastAPI(title="Analytics Dashboard API", version="1.0.0")
@@ -39,7 +31,7 @@ async def timing_middleware(request: Request, call_next):
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,888 +43,235 @@ app.include_router(google_drive.router)
 app.include_router(admin.router)
 app.include_router(stats.router)
 
-
 # Request/Response Models
 class ComputeAnalyticsRequest(BaseModel):
     sessionId: str
     filters: Optional[Dict[str, Any]] = None
-
-
-class FilterParams(BaseModel):
-    startDate: Optional[str] = None
-    endDate: Optional[str] = None
-    orderStatus: Optional[str] = None
-    paymentMethod: Optional[str] = None
-    channel: Optional[str] = None
-    sku: Optional[List[str]] = None
-    productName: Optional[List[str]] = None
-
 
 @app.get("/")
 async def root():
     """Health check endpoint"""
     return {"status": "ok", "message": "Analytics Dashboard API"}
 
-
 @app.post("/api/analytics/compute")
 async def compute_analytics(request: ComputeAnalyticsRequest):
     """
     POST /api/analytics/compute
-    Compute analytics from stored data
+    This is the primary endpoint for all analytics.
+    It loads the pre-processed data, applies filters, and computes all analytics in one go.
     """
     try:
         if not request.sessionId:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        # Get data from in-memory store
-        data = get_shipping_data(request.sessionId)
-        if not data:
+        df = get_dataframe(request.sessionId)
+        if df is None:
+            # Info level as this is expected during initial polling
+            logging.info(f"No Parquet file found for session {request.sessionId}")
             raise HTTPException(
                 status_code=404,
-                detail=f"No data found for session {request.sessionId}. Please read the shipping file first."
+                detail=f"No data found for session {request.sessionId}. Please process a file first."
             )
         
-        # Compute & cache analytics for this session
-        result = compute_all_analytics(data, request.filters, request.sessionId)
+        # Convert to Polars
+        pl_df = pl.from_pandas(df)
+        
+        # Normalize FIRST so that filter columns (like _status, _payment) exist
+        from backend.analytics import normalize_dataframe_pl
+        pl_df_normalized = normalize_dataframe_pl(pl_df)
+        
+        # Apply filters on the normalized Polars DataFrame
+        filtered_df = filter_shipping_data_pl(pl_df_normalized, request.filters)
+
+        # Compute analytics using the filtered, normalized data
+        result = compute_all_analytics(filtered_df, request.sessionId)
+        
         if not result.get("success"):
-            raise HTTPException(status_code=500, detail="Failed to compute analytics")
-        
-        return {
-            "success": True,
-            "message": "Analytics computed successfully",
-            "sessionId": request.sessionId,
-            "computed": result.get("computed", 0),
-            "errors": result.get("errors", {}),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error computing analytics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Specific routes must be defined BEFORE the generic route to avoid conflicts
-@app.get("/api/analytics/filter-options")
-async def get_filter_options(sessionId: str, channel: Optional[str] = None, sku: Optional[str] = None):
-    """Get filter options (channels, SKUs, product names, statuses)"""
-    try:
-        if not sessionId:
-            raise HTTPException(status_code=400, detail="Session ID is required")
-        
-        # CHECK CACHE FIRST
-        from backend.data_store import get_analytics
-        filter_filters = {}
-        if channel:
-            filter_filters['channel'] = channel
-        if sku:
-            filter_filters['sku'] = sku
-        cached_result = get_analytics(sessionId, 'filter-options', filter_filters if filter_filters else None)
-        
-        if cached_result is not None:
-            print(f"✅ Using cached filter-options for session {sessionId}")
-            return cached_result
-        
-        # Get cached DataFrame if available
-        from backend.data_store import get_dataframe
-        df = get_dataframe(sessionId)
-        
-        if df is None:
-            # Fallback to data conversion
-            data = get_shipping_data(sessionId)
-            if not data or len(data) == 0:
-                raise HTTPException(
-                    status_code=404, 
-                    detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
-                )
-            df = pd.DataFrame(data)
-            # Cache it for next time
-            from backend.data_store import store_dataframe
-            store_dataframe(sessionId, df)
-        else:
-            print(f"✅ Using cached DataFrame for filter-options")
-        
-        # Debug: Print available columns for SKU detection
-        print(f"📋 Available columns for filter-options (first 30): {df.columns.tolist()[:30]}")
-        
-        # Apply channel filter if provided
-        if channel and channel != 'All':
-            channel_col = None
-            # Check multiple possible column name variations
-            for col in ['channel', 'Channel', 'channel__', 'Channel__', 'sales_channel', 'Sales Channel']:
-                if col in df.columns:
-                    channel_col = col
-                    break
-            if channel_col:
-                # Try exact match first, then case-insensitive match
-                filtered_df = df[df[channel_col].astype(str).str.strip() == channel]
-                if filtered_df.empty:
-                    # Try case-insensitive match
-                    filtered_df = df[df[channel_col].astype(str).str.strip().str.lower() == channel.lower()]
-                df = filtered_df
-                print(f"✅ Applied channel filter '{channel}' on column '{channel_col}': {len(df)} rows remaining")
-            else:
-                print(f"⚠️ Channel filter '{channel}' requested but no channel column found in DataFrame")
-        
-        # Apply SKU filter if provided
-        if sku and sku != 'All':
-            sku_col = None
-            # Check both single and double underscore variants (after normalization)
-            for col in ['master__s_k_u', 'master_s_k_u', 'master_sku', 'sku', 
-                       'channel__s_k_u', 'channel_s_k_u', 'channel_sku', 'channel__sku']:
-                if col in df.columns:
-                    sku_col = col
-                    break
-            if sku_col:
-                df = df[df[sku_col] == sku]
-        
-        # If DataFrame is empty after filtering, return empty filter options instead of 404
-        # This is a valid state when filters don't match any data
-        if df.empty:
-            print(f"⚠️ No data found after filtering (channel={channel}, sku={sku}), returning empty filter options")
-            result = {
-                "success": True,
-                "channels": [],
-                "skus": [],
-                "skusTop10": [],
-                "productNames": [],
-                "productNamesTop10": [],
-                "statuses": sorted([
-                    'CANCELED', 'DELIVERED', 'DESTROYED', 'IN TRANSIT',
-                    'IN TRANSIT-AT DESTINATION HUB', 'LOST', 'OUT FOR DELIVERY',
-                    'OUT FOR PICKUP', 'PICKED UP', 'PICKUP EXCEPTION',
-                    'REACHED BACK AT_SELLER_CITY', 'REACHED DESTINATION HUB',
-                    'RTO DELIVERED', 'RTO IN TRANSIT', 'RTO INITIATED', 'RTO NDR',
-                    'UNDELIVERED', 'UNDELIVERED-1st Attempt', 'UNDELIVERED-2nd Attempt',
-                    'UNDELIVERED-3rd Attempt', 'UNTRACEABLE'
-                ]),
-            }
-            
-            # Cache the empty result
-            from backend.data_store import store_analytics
-            store_analytics(sessionId, 'filter-options', result, filter_filters if filter_filters else None)
-            return result
-        
-        # Extract unique values
-        channels = set()
-        sku_counts = {}
-        product_name_counts = {}
-        statuses = set()
-        
-        # Channel extraction - check both single and double underscore variants
-        channel_col = None
-        for col in ['channel', 'Channel', 'channel__']:
-            if col in df.columns:
-                channel_col = col
-                break
-        if channel_col:
-            channels = set(df[channel_col].dropna().astype(str).unique())
-            channels = {c for c in channels if c.lower() not in ['none', 'n/a', '']}
-        
-        # SKU extraction - check both single and double underscore variants
-        sku_cols = ['master__s_k_u', 'master_s_k_u', 'master_sku', 'sku', 
-                   'channel__s_k_u', 'channel_s_k_u', 'channel_sku', 'channel__sku']
-        sku_col_found = None
-        invalid_tokens = {'none', 'n/a', 'na', 'null', 'undefined', ''}
-        for col in sku_cols:
-            if col in df.columns:
-                sku_col_found = col
-                print(f"✅ Found SKU column: {col}")
-                s = df[col].dropna().astype(str).str.strip()
-                s = s[(s != "") & (~s.str.lower().isin(invalid_tokens))]
-                sku_counts = s.value_counts().to_dict()
-                break  # Use first found column
-        
-        if not sku_col_found:
-            print(f"⚠️ No SKU column found! Available columns: {df.columns.tolist()[:40]}")
-        else:
-            print(f"✅ Extracted {len(sku_counts)} unique SKUs")
-        
-        # Product name extraction - check both single and double underscore variants
-        product_cols = ['product__name', 'product_name', 'Product Name']
-        product_col_found = None
-        for col in product_cols:
-            if col in df.columns:
-                product_col_found = col
-                print(f"✅ Found Product Name column: {col}")
-                s = df[col].dropna().astype(str).str.strip()
-                s = s[(s != "") & (~s.str.lower().isin(invalid_tokens))]
-                product_name_counts = s.value_counts().to_dict()
-                break  # Use first found column
-        
-        if not product_col_found:
-            print(f"⚠️ No Product Name column found!")
-        else:
-            print(f"✅ Extracted {len(product_name_counts)} unique product names")
-        
-        # Status extraction
-        status_cols = ['delivery_status', 'status', 'original_status', 'current_status']
-        for col in status_cols:
-            if col in df.columns:
-                s = df[col].dropna().astype(str).str.strip().str.upper()
-                s = s[(s != "") & (~s.isin(['NONE', 'N/A', 'NA', 'NULL', 'UNDEFINED', "'"]))]
-                statuses.update(s.unique().tolist())
-        
-        # Predefined statuses
-        predefined_statuses = [
-            'CANCELED', 'DELIVERED', 'DESTROYED', 'IN TRANSIT',
-            'IN TRANSIT-AT DESTINATION HUB', 'LOST', 'OUT FOR DELIVERY',
-            'OUT FOR PICKUP', 'PICKED UP', 'PICKUP EXCEPTION',
-            'REACHED BACK AT_SELLER_CITY', 'REACHED DESTINATION HUB',
-            'RTO DELIVERED', 'RTO IN TRANSIT', 'RTO INITIATED', 'RTO NDR',
-            'UNDELIVERED', 'UNDELIVERED-1st Attempt', 'UNDELIVERED-2nd Attempt',
-            'UNDELIVERED-3rd Attempt', 'UNTRACEABLE'
-        ]
-        statuses.update(predefined_statuses)
-        
-        # Get top 10 SKUs and product names
-        sku_top10 = sorted(sku_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-        product_top10 = sorted(product_name_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-        
-        result = {
-            "success": True,
-            "channels": sorted(list(channels)),
-            "skus": sorted(list(sku_counts.keys())),
-            "skusTop10": [s[0] for s in sku_top10],
-            "productNames": sorted(list(product_name_counts.keys())),
-            "productNamesTop10": [p[0] for p in product_top10],
-            "statuses": sorted(list(statuses)),
-        }
-        
-        # Cache the result
-        from backend.data_store import store_analytics
-        store_analytics(sessionId, 'filter-options', result, filter_filters if filter_filters else None)
+            raise HTTPException(status_code=500, detail=f"Failed to compute analytics: {result.get('errors')}")
         
         return result
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error getting filter options: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/api/analytics/raw-shipping")
-async def get_raw_shipping(
-    sessionId: str,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None,
-    limit: Optional[int] = None,
-    page: Optional[int] = 1
+@app.get("/api/analytics/filter-options")
+async def get_filter_options(
+    sessionId: str, 
+    channel: List[str] = Query(None),
+    sku: List[str] = Query(None)
 ):
-    """Get raw shipping data with optional filters"""
+    """Get unique filter options (channels, SKUs, product names, statuses)
+    
+    When a channel is specified, SKUs and product names are filtered to that channel only.
+    When a SKU is specified, product names are filtered to that SKU only.
+    """
     try:
         if not sessionId:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        # Get data from in-memory store
-        data = get_shipping_data(sessionId)
-        if not data or len(data) == 0:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No data found for session {sessionId}. The server may have restarted. Please read the shipping file again."
-            )
+        df = get_dataframe(sessionId)
+        if df is None:
+            raise HTTPException(status_code=404, detail="No data found for session.")
+
+        # Use the centralized COLUMN_MAP from analytics.py
+        # This ensures consistent column resolution across the application
         
-        # Build filters dict
-        filters = {}
-        if startDate:
-            filters['startDate'] = startDate
-        if endDate:
-            filters['endDate'] = endDate
-        if orderStatus and orderStatus != 'All':
-            filters['orderStatus'] = orderStatus
-        if paymentMethod and paymentMethod != 'All':
-            filters['paymentMethod'] = paymentMethod
-        if channel and channel != 'All':
-            filters['channel'] = channel
+        # Helper to find column from mapped keys
+        def resolve_col(keys):
+            for k in keys:
+                if k in df.columns:
+                    return k
+            return None
+
+        # Resolve columns
+        channel_col = resolve_col(COLUMN_MAP.get('channel', ['channel', 'Channel', 'channel__']))
+        sku_col = resolve_col(COLUMN_MAP.get('sku', ['master__s_k_u', 'sku']))
+        product_col = resolve_col(COLUMN_MAP.get('product', ['product_name', 'product__name']))
+        status_col = resolve_col(COLUMN_MAP.get('status', ['status', 'original_status']))
+        payment_col = resolve_col(COLUMN_MAP.get('payment', ['payment_method', 'payment__method']))
+        state_col = resolve_col(COLUMN_MAP.get('state', ['state', 'address__state']))
+        courier_col = resolve_col(COLUMN_MAP.get('courier', ['courier_company', 'courier__company', 'master_courier', 'courier_name']))
+        ndr_desc_col = resolve_col(COLUMN_MAP.get('ndr_description', ['latest__n_d_r__reason', 'latest_ndr_reason', 'ndr_reason', 'ndr_description']))
+        ndr_count_col = resolve_col(COLUMN_MAP.get('ndr_count', ['ndr_attempt', 'ndr_count', 'attempt_count', 'number_of_attempts']))
+        
+        # Fallback: Search for any column containing "ndr" and "reason" case-insensitively if not found
+        if not ndr_desc_col:
+            for col in df.columns:
+                lower_col = str(col).lower()
+                if "ndr" in lower_col and "reason" in lower_col:
+                    ndr_desc_col = col
+                    print(f"DEBUG: Found fallback NDR column: {col}")
+                    break
+        
+        print(f"DEBUG: Selected NDR Column: {ndr_desc_col}")
+        
+        # Fallback: Search for any column containing "payment" case-insensitively if not found
+        if not payment_col:
+            for col in df.columns:
+                if "payment" in str(col).lower():
+                    payment_col = col
+                    break
+        
+        # --- DEBUG LOGGING START ---
+        print(f"DEBUG: Session {sessionId}")
+        print(f"DEBUG: DataFrame Columns: {list(df.columns)}")
+        print(f"DEBUG: COLUMN_MAP['ndr_description'] = {COLUMN_MAP.get('ndr_description')}")
+        print(f"DEBUG: Resolved ndr_desc_col: {ndr_desc_col}")
+        # --- DEBUG LOGGING END ---
+        
+
+        def get_unique_values(df, col_name):
+            """Get unique values from a specific column."""
+            if not col_name or col_name not in df.columns:
+                return []
+            
+            # Helper to check validity
+            def is_valid(v):
+                if v is None: return False
+                s = str(v).strip()
+                return s and s.lower() not in ['', 'none', 'n/a', 'na', 'null', 'undefined', 'nan']
+
+            values = df[col_name].dropna().unique().tolist()
+            return [v for v in values if is_valid(v)]
+
+        # Always get all channels and statuses (not filtered)
+        channels = get_unique_values(df, channel_col)
+        statuses = get_unique_values(df, status_col)
+        payment_methods = get_unique_values(df, payment_col)
+        states = get_unique_values(df, state_col)
+        couriers = get_unique_values(df, courier_col)
+        ndr_descriptions = get_unique_values(df, ndr_desc_col)
+        ndr_counts = get_unique_values(df, ndr_count_col)
+        
+        # If we have internal normalized columns, we can also check them if primary check fails,
+        # but COLUMN_MAP is usually robust enough. 
+        # For payment, let's also try '_payment' if available from a previous normalization step (unlikely here as we load raw parquet, but safe to check)
+        if not payment_methods and '_payment' in df.columns:
+             payment_methods = get_unique_values(df, '_payment')
+        
+        if not states and '_state' in df.columns:
+             states = get_unique_values(df, '_state')
+        
+        if not couriers and '_courier' in df.columns:
+             couriers = get_unique_values(df, '_courier')
+
+        if not ndr_descriptions and '_ndr_description' in df.columns:
+             ndr_descriptions = get_unique_values(df, '_ndr_description')
+
+        if not ndr_counts and '_ndr_count' in df.columns:
+             ndr_counts = get_unique_values(df, '_ndr_count')
+
+        
+        # Apply filters to the DataFrame for cascading options
+        filtered_df = df
+        
+        # Filter by Channel
+        if channel:
+            valid_channels = [c for c in channel if c and c != 'All']
+            if valid_channels:
+                if channel_col:
+                    filtered_df = filtered_df[filtered_df[channel_col].isin(valid_channels)]
+        
+        # Filter by SKU (New logic)
         if sku:
-            filters['sku'] = sku
-        if productName:
-            filters['productName'] = productName
+            valid_skus = [s for s in sku if s and s != 'All']
+            if valid_skus:
+                if sku_col:
+                    filtered_df = filtered_df[filtered_df[sku_col].isin(valid_skus)]
         
-        # Pagination setup (do this early so we can avoid converting huge payloads)
-        page = page or 1
-        if limit:
-            limit = min(limit, 500)  # Max 500 per page
-            start_index = (page - 1) * limit
-            end_index = start_index + limit
-        else:
-            start_index = None
-            end_index = None
+        # Get SKUs and product names from the filtered DataFrame
+        # SKUs should be filtered by Channel, but usually not by themselves (unless we want to show only selected SKUs?)
+        # Typically "available" SKUs should be constrained by Channel.
+        # "available" Products should be constrained by Channel AND selected SKU.
         
-        # Apply filters if any (requires normalized dataframe)
-        if filters:
-            from backend.data_store import get_dataframe, store_dataframe
-            df = get_dataframe(sessionId)
-            if df is None:
-                df = pd.DataFrame(data)
-            
-            # Ensure df is normalized for filter_shipping_data()
-            if "_order_date" not in df.columns or "_status" not in df.columns:
-                df = normalize_dataframe(df)
-                store_dataframe(sessionId, df)
+        # IMPORTANT: To allow changing SKU selection, we should calculate available SKUs based on Channel ONLY,
+        # otherwise selecting 1 SKU would hide all others.
+        
+        # 1. Calc SKUs based on Channel Only
+        df_for_skus = df
+        if channel:
+            valid_channels = [c for c in channel if c and c != 'All']
+            if valid_channels and channel_col:
+                df_for_skus = df[df[channel_col].isin(valid_channels)]
+        
+        skus = get_unique_values(df_for_skus, sku_col)
+        
+        # 2. Calc Products based on Channel AND SKU
+        # filtered_df already has both applied
+        product_names = get_unique_values(filtered_df, product_col)
+        
+        # Get top 10 by frequency for SKUs and product names (for quick filter options)
+        def get_top_10(df, col_name):
+            """Get top 10 most frequent values."""
+            if not col_name or col_name not in df.columns:
+                return []
+            value_counts = df[col_name].value_counts().head(10)
+            return value_counts.index.tolist()
+        
+        skus_top_10 = get_top_10(df_for_skus, sku_col)
+        product_names_top_10 = get_top_10(filtered_df, product_col)
 
-            filtered_df = filter_shipping_data(df, filters)
-            total = len(filtered_df)
-            if limit:
-                page_df = filtered_df.iloc[start_index:end_index]
-                total_pages = (total + limit - 1) // limit
-            else:
-                page_df = filtered_df
-                total_pages = 1
-
-            # Replace NaN values with None for JSON serialization (only for current page)
-            page_df = page_df.where(pd.notna(page_df), None)
-            paginated_data = sanitize_for_json(page_df.to_dict('records'))
-        else:
-            total = len(data)
-            if limit:
-                paginated_data = sanitize_for_json(data[start_index:end_index])
-                total_pages = (total + limit - 1) // limit
-            else:
-                paginated_data = sanitize_for_json(data)
-                total_pages = 1
-        
         return {
             "success": True,
-            "data": paginated_data,
-            "count": len(paginated_data),
-            "total": total,
-            "page": page or 1,
-            "limit": limit or total,
-            "totalPages": total_pages,
+            "channels": sorted([str(c) for c in channels]),
+            "skus": sorted([str(s) for s in skus]),
+            "skusTop10": [str(s) for s in skus_top_10],
+            "productNames": sorted([str(p) for p in product_names]),
+            "productNamesTop10": [str(p) for p in product_names_top_10],
+            "statuses": sorted([str(s) for s in statuses]),
+            "paymentMethods": sorted([str(p) for p in payment_methods]),
+            "states": sorted([str(s) for s in states]),
+            "couriers": sorted([str(c) for c in couriers]),
+            "ndrDescriptions": sorted([str(d) for d in ndr_descriptions]),
+            "ndrCounts": sorted([str(c) for c in ndr_counts]),
         }
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error getting raw shipping data: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/analytics/{analytics_type}")
-async def get_analytics(
-    analytics_type: str, 
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """
-    GET /api/analytics/{analytics_type}?sessionId=xxx&filters=xxx
-    Get computed analytics from stored data
-    Supports filters as JSON string or individual query parameters
-    """
-    try:
-        if not sessionId:
-            raise HTTPException(status_code=400, detail="Session ID is required")
-        
-        # Parse filters if provided as JSON string
-        filter_dict = None
-        if filters:
-            import json
-            try:
-                filter_dict = json.loads(filters)
-            except json.JSONDecodeError:
-                filter_dict = None
-        
-        # If no filters JSON string, build filter_dict from individual query parameters
-        if not filter_dict:
-            filter_dict = {}
-            if startDate:
-                filter_dict['startDate'] = startDate
-            if endDate:
-                filter_dict['endDate'] = endDate
-            if orderStatus and orderStatus != 'All':
-                filter_dict['orderStatus'] = orderStatus
-            if paymentMethod and paymentMethod != 'All':
-                filter_dict['paymentMethod'] = paymentMethod
-            if channel and channel != 'All':
-                filter_dict['channel'] = channel
-            if sku:
-                filter_dict['sku'] = sku if isinstance(sku, list) else [sku]
-            if productName:
-                filter_dict['productName'] = productName if isinstance(productName, list) else [productName]
-            
-            # Only set filter_dict if it has any filters
-            if not filter_dict:
-                filter_dict = None
-        
-        # Get data from in-memory store
-        data = get_shipping_data(sessionId)
-        if not data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
-            )
-        
-        # Check if it's a special endpoint that has its own route
-        if analytics_type in ['filter-options', 'raw-shipping']:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Use the dedicated endpoint for '{analytics_type}': /api/analytics/{analytics_type}"
-            )
-        
-        # CHECK CACHE FIRST
-        from backend.data_store import get_analytics
-        cached_result = get_analytics(sessionId, analytics_type, filter_dict)
-        
-        if cached_result is not None:
-            print(f"✅ Using cached analytics '{analytics_type}' for session {sessionId}")
-            return sanitize_for_json(cached_result)  # ensure JSON-safe even for legacy cached values
-        
-        # Cache miss - compute on demand
-        print(f"⚠️  Cache miss for '{analytics_type}' - computing on demand...")
-        computed_data = compute_single_analytics(data, analytics_type, filter_dict, sessionId)
-        
-        if computed_data is None:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Analytics type '{analytics_type}' is not supported or could not be computed"
-            )
-        
-        # Store in cache for next time
-        if computed_data is not None and sessionId:
-            from backend.data_store import store_analytics
-            store_analytics(sessionId, analytics_type, computed_data, filter_dict)
-        
-        return sanitize_for_json(computed_data)
-    except HTTPException:
-        raise
-    except ValueError as e:
-        # Unsupported analytics types etc.
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"Error getting analytics: {e}")
         import traceback
-        print(traceback.format_exc())
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/analytics/weekly-summary")
-async def get_weekly_summary(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get weekly summary analytics"""
-    return await get_analytics(
-        "weekly-summary", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/ndr-weekly")
-async def get_ndr_weekly(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get NDR weekly analytics"""
-    return await get_analytics(
-        "ndr-weekly", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/state-performance")
-async def get_state_performance(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get state performance analytics"""
-    return await get_analytics(
-        "state-performance", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/category-share")
-async def get_category_share(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get category share analytics"""
-    return await get_analytics(
-        "category-share", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/cancellation-tracker")
-async def get_cancellation_tracker(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get cancellation tracker analytics"""
-    return await get_analytics(
-        "cancellation-tracker", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/channel-share")
-async def get_channel_share(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get channel share analytics"""
-    return await get_analytics(
-        "channel-share", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/payment-method")
-async def get_payment_method(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get payment method analytics"""
-    return await get_analytics(
-        "payment-method", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/product-analysis")
-async def get_product_analysis(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get product analysis analytics"""
-    return await get_analytics(
-        "product-analysis", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/sku-analysis")
-async def get_sku_analysis(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get SKU analysis analytics"""
-    return await get_analytics(
-        "sku-analysis", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/summary-metrics")
-async def get_summary_metrics(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get summary metrics analytics"""
-    return await get_analytics(
-        "summary-metrics", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/order-statuses")
-async def get_order_statuses(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get order statuses analytics"""
-    return await get_analytics(
-        "order-statuses", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/order-status-filter")
-async def get_order_status_filter(sessionId: str):
-    """Get unique order statuses for filter dropdown from dataframe"""
-    try:
-        if not sessionId:
-            raise HTTPException(status_code=400, detail="Session ID is required")
-        
-        # Get data from in-memory store
-        data = get_shipping_data(sessionId)
-        if not data or len(data) == 0:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No data found for session {sessionId}. The server may have restarted and cleared the in-memory store. Please read the shipping file again."
-            )
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(data)
-        
-        if df.empty:
-            raise HTTPException(status_code=404, detail="No data found in dataframe")
-        
-        # Extract unique order statuses from multiple possible columns
-        statuses = set()
-        status_cols = ['delivery_status', 'status', 'original_status', 'current_status']
-        
-        for col in status_cols:
-            if col in df.columns:
-                # Get unique values, convert to string, strip whitespace, and filter out invalid values
-                unique_statuses = df[col].dropna().astype(str).str.strip().str.upper()
-                valid_statuses = unique_statuses[
-                    ~unique_statuses.isin(['NONE', 'N/A', 'NA', 'NULL', 'UNDEFINED', '', "'", 'NAN'])
-                ]
-                statuses.update(valid_statuses.unique())
-        
-        # Convert to sorted list
-        status_list = sorted(list(statuses))
-        
-        return {
-            "success": True,
-            "statuses": status_list,
-            "count": len(status_list)
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error getting order status filter: {e}")
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/analytics/payment-method-outcome")
-async def get_payment_method_outcome(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get payment method outcome analytics"""
-    return await get_analytics(
-        "payment-method-outcome", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/ndr-count")
-async def get_ndr_count(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get NDR count analytics"""
-    return await get_analytics(
-        "ndr-count", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/address-type-share")
-async def get_address_type_share(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get address type share analytics"""
-    return await get_analytics(
-        "address-type-share", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/average-order-tat")
-async def get_average_order_tat(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get average order TAT analytics"""
-    return await get_analytics(
-        "average-order-tat", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/fad-del-can-rto")
-async def get_fad_del_can_rto(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get FAD/DEL/CAN/RTO analytics"""
-    return await get_analytics(
-        "fad-del-can-rto", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/cancellation-reason-tracker")
-async def get_cancellation_reason_tracker(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get cancellation reason tracker analytics"""
-    return await get_analytics(
-        "cancellation-reason-tracker", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/analytics/delivery-partner-analysis")
-async def get_delivery_partner_analysis(
-    sessionId: str, 
-    filters: Optional[str] = None,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
-    orderStatus: Optional[str] = None,
-    paymentMethod: Optional[str] = None,
-    channel: Optional[str] = None,
-    sku: Optional[List[str]] = None,
-    productName: Optional[List[str]] = None
-):
-    """Get delivery partner analysis analytics"""
-    return await get_analytics(
-        "delivery-partner-analysis", sessionId, filters,
-        startDate, endDate, orderStatus, paymentMethod, channel, sku, productName
-    )
-
-
-@app.get("/api/stats/session")
-async def get_session_stats(sessionId: str):
-    """Get session statistics"""
-    try:
-        if not sessionId:
-            raise HTTPException(status_code=400, detail="Session ID is required")
-        
-        return {
-            "sessionId": sessionId,
-            "message": "Session stats endpoint - Redis removed, data must be provided directly"
-        }
-    except Exception as e:
-        print(f"Error getting stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/session/generate")
-async def generate_session():
-    """Generate a new session ID"""
-    session_id = f"session_{uuid.uuid4().hex[:16]}"
-    return {"sessionId": session_id}
-
-
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)

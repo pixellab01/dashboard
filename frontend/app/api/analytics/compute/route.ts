@@ -24,9 +24,13 @@ export async function POST(request: NextRequest) {
       queryParams: asyncMode ? { async_mode: 'true' } : undefined,
     })
 
-    const data = await response.json()
-    
-    return NextResponse.json(data, { status: response.status })
+    // Stream the response directly to the client to avoid buffering large JSON in memory
+    return new NextResponse(response.body, {
+      status: response.status,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
   } catch (error: any) {
     console.error('Error computing analytics:', error)
     return NextResponse.json(

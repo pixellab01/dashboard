@@ -1,0 +1,19 @@
+--- Fix for Delivery Partner Analysis Table ---
+
+The table has 3 main issues:
+
+1. Table Component (lines 3183-3339):
+   - Current: Shows only "Total" column with summed data
+   - Should: Show time-based columns (Day/Week/Overall) like StateAnalysisTable
+   - Missing: Pagination, proper metrics display
+
+2. Aggregation Function (lines 1995-2139):
+   - Current: Only tracks delivered, cancelled, inTransit, rto, other
+   - Should: Calculate total_orders, delivered_percent, rto_percent, order_share, etc.
+   - Missing: Week calculation logic like in aggregateStatesByTime
+
+3. Data Structure:
+   - Current: timePeriods array with simple metrics
+   - Should: Match StateAnalysisTable structure with total_orders, percentages
+
+Here are the complete corrected functions:

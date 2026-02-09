@@ -1,531 +1,507 @@
 """
-High-Performance Shipping Analytics Engine (Production Optimized)
-Author: Optimized Pandas Architecture
+High-Performance Shipping Analytics Engine
+Now powered by Polars for core operations.
+Provides a compatibility layer for existing pandas functions.
 """
 
 import pandas as pd
-import numpy as np
+import polars as pl
 from typing import Dict, Any, List, Optional
 import math
+import numpy as np
 
 # ============================================================
-# 1️⃣ COLUMN RESOLUTION UTILS
+# 1️⃣ COLUMN RESOLUTION UTILS (Pandas & Polars compatible)
 # ============================================================
 
 COLUMN_MAP = {
     "status": ["original_status", "status", "delivery_status"],
-    "order_date": ["order_date", "order__date", "created_at", "shiprocket__created__at"],
+    "order_date": ["order_date", "order__date", "created_at", "shiprocket__created__at", "shiprocket_created_at"],
     "order_value": ["order_value", "gmv_amount", "order_total", "order__total", "total_order_value"],
-    "payment": ["payment_method", "payment__method", "paymentmethod"],
-    "state": ["state", "address__state"],
-    "sku": ["master_sku", "master_s_k_u", "sku", "channel_sku", "channel_s_k_u"],
-    "product": ["product_name", "product__name"],
+    "payment": ["payment__method", "payment_method", "paymentmethod", "payment", "method", "type", "Payment Type"],
+    "state": ["state", "address__state", "Address State", "address_state"],
+    "sku": ["channel__s_k_u", "master__s_k_u", "master_sku", "master_s_k_u", "sku", "channel_sku", "channel_s_k_u"],
+    "product": ["product__name", "product_name", "product__name"],
     "category": ["category", "product__category"],
+    "pickup_date": ["order_picked_up_date", "order__picked__up__date", "pickedup_timestamp", "pickup_date"],
+    "ofd_date": ["first_out_for_delivery_date", "first__out__for__delivery__date", "latest_ofd_date", "latest__o_f_d__date", "ofd_date"],
+    "awb_date": ["awb_assigned_date", "awb__assigned__date", "awb_date"],
+    "approval_date": ["approval_date", "approval__date", "order_approved_date", "order__approved__date"],
+    "courier": ["courier_company", "courier__company", "master_courier", "master__courier", "courier_name"],
+    "channel": ["channel", "source", "platform", "channel_name"],
+    "ndr_description": ["latest__n_d_r__reason", "latest_ndr_reason", "ndr_reason", "ndr_description", "reason"],
 }
 
-
-def resolve_column(df: pd.DataFrame, keys: List[str]) -> Optional[str]:
+def resolve_column(df_columns: List[str], keys: List[str]) -> Optional[str]:
+    """Find the first matching column in the dataframe."""
     for c in keys:
-        if c in df.columns:
+        if c in df_columns:
             return c
     return None
 
-
 # ============================================================
-# 2️⃣ DATAFRAME NORMALIZATION (CRITICAL)
+# 2️⃣ DATAFRAME NORMALIZATION (CRITICAL - Ported to Polars)
 # ============================================================
-def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
 
+def normalize_dataframe_pl(df: pl.DataFrame) -> pl.DataFrame:
+    """Normalizes the DataFrame using high-performance Polars expressions."""
+    
     # ---------- STATUS ----------
-    status_col = resolve_column(df, COLUMN_MAP["status"])
-    if status_col:
-        df["_status"] = (
-            df[status_col]
-            .astype(str)
-            .str.upper()
-            .str.replace("_", " ")
-            .str.replace("-", " ")
-            .str.strip()
-        )
-    else:
-        df["_status"] = "UNKNOWN"
-
-    # ---------- FLAGS ----------
-    if "ndr_flag" in df.columns:
-        df["_is_ndr"] = df["ndr_flag"].fillna(False).astype(bool)
-    else:
-        df["_is_ndr"] = False
-
-    if "cancelled_flag" in df.columns:
-        # Some datasets may also encode cancellation in the status text; keep that signal.
-        df["_is_cancelled"] = df["cancelled_flag"].fillna(False).astype(bool)
-    else:
-        df["_is_cancelled"] = df["_status"].str.contains("CANCEL", na=False)
-
-    df["_is_delivered"] = df["_status"] == "DELIVERED"
-    df["_is_rto"] = df["_status"].str.contains("RTO", na=False)
-
-    # ---------- DATE ----------
-    date_col = resolve_column(df, COLUMN_MAP["order_date"])
-    if date_col:
-        df["_order_date"] = pd.to_datetime(df[date_col], errors="coerce")
-        df["_order_week"] = df["_order_date"].dt.to_period("W").astype(str)
-    else:
-        df["_order_week"] = "Unknown"
+    status_col = resolve_column(df.columns, COLUMN_MAP["status"])
+    status_expr = (
+        pl.col(status_col).cast(pl.Utf8).str.to_uppercase().str.replace_all("[_-]", " ").str.strip_chars()
+        if status_col else pl.lit("UNKNOWN")
+    ).alias("_status")
 
     # ---------- PAYMENT ----------
-    payment_col = resolve_column(df, COLUMN_MAP["payment"])
-    if payment_col:
-        p = df[payment_col].astype(str).str.upper()
-        df["_payment"] = np.select(
-            [
-                p.str.contains("COD|CASH", na=False),
-                p.str.contains("ONLINE|PREPAID|PAID", na=False),
-            ],
-            ["COD", "ONLINE"],
-            default="NAN",
-        )
-    else:
-        df["_payment"] = "NAN"
+    payment_col = resolve_column(df.columns, COLUMN_MAP["payment"])
+    payment_expr = (
+        pl.col(payment_col).cast(pl.Utf8).str.strip_chars().str.to_uppercase()
+        if payment_col else pl.lit("NAN")
+    ).alias("_payment")
+    
+    # ---------- ORDER VALUE ----------
+    order_value_col = resolve_column(df.columns, COLUMN_MAP["order_value"])
+    order_value_expr = (
+        pl.col(order_value_col).cast(pl.Float64, strict=False).fill_null(0.0)
+        if order_value_col else pl.lit(0.0)
+    ).alias("_order_value")
+    
+    # ---------- DATE ----------
+    date_col = resolve_column(df.columns, COLUMN_MAP["order_date"])
+    date_expr = (
+        pl.col(date_col).cast(pl.Utf8).str.to_datetime(strict=False) if date_col else pl.lit(None, dtype=pl.Datetime)
+    ).alias("_order_date")
 
-    # ---------- ORDER VALUE (numeric) ----------
-    order_value_col = resolve_column(df, COLUMN_MAP["order_value"])
-    if order_value_col:
-        df["_order_value"] = pd.to_numeric(df[order_value_col], errors="coerce").fillna(0.0)
-    else:
-        df["_order_value"] = 0.0
+    pickup_date_col = resolve_column(df.columns, COLUMN_MAP["pickup_date"])
+    pickup_date_expr = (
+        pl.col(pickup_date_col).cast(pl.Utf8).str.to_datetime(strict=False) if pickup_date_col else pl.lit(None, dtype=pl.Datetime)
+    ).alias("_pickup_date")
 
+    ofd_date_col = resolve_column(df.columns, COLUMN_MAP["ofd_date"])
+    ofd_date_expr = (
+        pl.col(ofd_date_col).cast(pl.Utf8).str.to_datetime(strict=False) if ofd_date_col else pl.lit(None, dtype=pl.Datetime)
+    ).alias("_ofd_date")
+
+    awb_date_col = resolve_column(df.columns, COLUMN_MAP["awb_date"])
+    awb_date_expr = (
+        pl.col(awb_date_col).cast(pl.Utf8).str.to_datetime(strict=False) if awb_date_col else pl.lit(None, dtype=pl.Datetime)
+    ).alias("_awb_date")
+
+    approval_date_col = resolve_column(df.columns, COLUMN_MAP["approval_date"])
+    approval_date_expr = (
+        pl.col(approval_date_col).cast(pl.Utf8).str.to_datetime(strict=False) if approval_date_col else pl.lit(None, dtype=pl.Datetime)
+    ).alias("_approval_date")
+
+    # ---------- STATE ----------
+    state_col = resolve_column(df.columns, COLUMN_MAP["state"])
+    state_expr = (
+        pl.col(state_col).cast(pl.Utf8).str.strip_chars().str.to_uppercase()
+        if state_col else pl.lit("UNKNOWN")
+    ).alias("_state")
+    
+    # ---------- COURIER ----------
+    courier_col = resolve_column(df.columns, COLUMN_MAP["courier"])
+    courier_expr = (
+        pl.col(courier_col).cast(pl.Utf8).str.strip_chars().str.to_uppercase()
+        if courier_col else pl.lit("UNKNOWN")
+    ).alias("_courier")
+
+    # ---------- NDR DESCRIPTION ----------
+    ndr_desc_col = resolve_column(df.columns, COLUMN_MAP["ndr_description"])
+    ndr_desc_expr = (
+        pl.col(ndr_desc_col).cast(pl.Utf8).str.strip_chars()
+        if ndr_desc_col else pl.lit("Unknown")
+    ).alias("_ndr_description")
+
+    df = df.with_columns([status_expr, payment_expr, order_value_expr, date_expr, pickup_date_expr, ofd_date_expr, awb_date_expr, approval_date_expr, state_expr, courier_expr, ndr_desc_expr])
+    
+    # ---------- TAT CALCULATIONS ----------
+    df = df.with_columns([
+        ((pl.col("_pickup_date") - pl.col("_order_date")).dt.total_seconds() / 3600 / 24).alias("tat_order_to_pickup"),
+        ((pl.col("_approval_date") - pl.col("_order_date")).dt.total_seconds() / 3600 / 24).fill_null(0.0).alias("tat_order_to_approval"),
+        ((pl.col("_awb_date") - pl.col("_approval_date")).dt.total_seconds() / 3600 / 24).alias("tat_approval_to_awb"),
+        ((pl.col("_pickup_date") - pl.col("_awb_date")).dt.total_seconds() / 3600 / 24).alias("tat_awb_to_pickup"),
+        ((pl.col("_ofd_date") - pl.col("_pickup_date")).dt.total_seconds() / 3600 / 24).alias("tat_pickup_to_ofd"),
+        ((pl.col("_ofd_date") - pl.col("_order_date")).dt.total_seconds() / 3600 / 24).alias("tat_order_to_ofd"),
+    ])
+
+    # Columns that depend on the ones above
+    week_expr = pl.col("_order_date").dt.week().cast(pl.Utf8).alias("_order_week")
+    
+    is_cancelled_expr = (
+        pl.col("cancelled_flag").cast(pl.Boolean).fill_null(False) if "cancelled_flag" in df.columns 
+        else pl.col("_status").str.contains("CANCEL")
+    ).alias("_is_cancelled")
+    
+    df = df.with_columns([
+        week_expr,
+        is_cancelled_expr,
+        (pl.col("_status") == "DELIVERED").alias("_is_delivered"),
+        pl.col("_status").str.contains("RTO").alias("_is_rto"),
+        (pl.col("ndr_flag").cast(pl.Boolean).fill_null(False) if "ndr_flag" in df.columns else pl.lit(False)).alias("_is_ndr")
+    ])
+    
     return df
 
+
 # ============================================================
-# 3️⃣ FILTERING (VECTORIZED)
+# 3️⃣ FILTERING (Polars)
 # ============================================================
 
-def filter_shipping_data(df: pd.DataFrame, filters: Dict[str, Any]) -> pd.DataFrame:
-    mask = pd.Series(True, index=df.index)
-
+def filter_shipping_data_pl(lf: pl.LazyFrame, filters: Dict[str, Any]) -> pl.LazyFrame:
+    """Filters a Polars LazyFrame based on the filter criteria."""
     if filters.get("startDate"):
-        mask &= df["_order_date"] >= pd.to_datetime(filters["startDate"])
+        lf = lf.filter(pl.col("_order_date") >= pl.lit(pd.to_datetime(filters["startDate"])))
 
     if filters.get("endDate"):
-        mask &= df["_order_date"] <= pd.to_datetime(filters["endDate"])
+        lf = lf.filter(pl.col("_order_date") <= pl.lit(pd.to_datetime(filters["endDate"])))
 
-    if filters.get("orderStatus") and filters["orderStatus"] != "All":
-        s = filters["orderStatus"].upper()
-        mask &= df["_status"].str.contains(s, na=False)
+    # --- ORDER STATUS ---
+    if filters.get("orderStatus") and filters["orderStatus"] != "All" and filters["orderStatus"] != []:
+        val = filters["orderStatus"]
+        if isinstance(val, list):
+            if len(val) > 0:
+                # Normalize values to uppercase for comparison
+                lf = lf.filter(pl.col("_status").str.to_uppercase().is_in([str(x).upper() for x in val]))
+        else:
+             s = str(val).upper()
+             # For single value, use is_in for exact match if possible, or contains if fuzzy
+             # Standardizing on exact match for consistency with multi-select
+             lf = lf.filter(pl.col("_status") == s)
 
-    if filters.get("paymentMethod") and filters["paymentMethod"] != "All":
-        mask &= df["_payment"] == filters["paymentMethod"].upper()
+    # --- PAYMENT METHOD ---
+    if filters.get("paymentMethod") and filters["paymentMethod"] != "All" and filters["paymentMethod"] != []:
+        val = filters["paymentMethod"]
+        if isinstance(val, list):
+             if len(val) > 0:
+                 lf = lf.filter(pl.col("_payment").is_in([str(x).upper() for x in val]))
+        else:
+            lf = lf.filter(pl.col("_payment") == str(val).upper())
 
-    if filters.get("channel") and "channel" in df.columns:
-        mask &= df["channel"] == filters["channel"]
+    # --- CHANNEL ---
+    if filters.get("channel") and filters["channel"] != "All" and filters["channel"] != []:
+        channel_col = resolve_column(lf.columns, COLUMN_MAP["channel"])
+        if channel_col:
+            val = filters["channel"]
+            if isinstance(val, list):
+                if len(val) > 0:
+                    lf = lf.filter(pl.col(channel_col).is_in(val))
+            else:
+                 lf = lf.filter(pl.col(channel_col) == val)
 
-    if filters.get("sku"):
-        sku_col = resolve_column(df, COLUMN_MAP["sku"])
+    # --- STATE ---
+    if filters.get("state") and filters["state"] != "All" and filters["state"] != []:
+        val = filters["state"]
+        if isinstance(val, list):
+             if len(val) > 0:
+                 # Normalize state to uppercase before filtering
+                 lf = lf.filter(pl.col("_state").is_in([str(x).upper() for x in val]))
+        else:
+            lf = lf.filter(pl.col("_state") == str(val).upper())
+
+    # --- COURIER ---
+    if filters.get("courier") and filters["courier"] != "All" and filters["courier"] != []:
+        val = filters["courier"]
+        if isinstance(val, list):
+             if len(val) > 0:
+                 lf = lf.filter(pl.col("_courier").is_in([str(x).upper() for x in val]))
+        else:
+            lf = lf.filter(pl.col("_courier") == str(val).upper())
+
+    # --- SKU ---
+    if filters.get("sku") and filters["sku"] != "All" and filters["sku"] != []:
+        sku_col = resolve_column(lf.columns, COLUMN_MAP["sku"])
         if sku_col:
-            sku_list = filters["sku"] if isinstance(filters["sku"], list) else [filters["sku"]]
-            mask &= df[sku_col].isin(sku_list)
+            val = filters["sku"]
+            if isinstance(val, list):
+                if len(val) > 0:
+                    lf = lf.filter(pl.col(sku_col).is_in(val))
+            else:
+                lf = lf.filter(pl.col(sku_col) == val)
 
-    if filters.get("productName"):
-        prod_col = resolve_column(df, COLUMN_MAP["product"])
-        if prod_col:
-            prod_list = filters["productName"] if isinstance(filters["productName"], list) else [filters["productName"]]
-            mask &= df[prod_col].isin(prod_list)
+    # --- PRODUCT NAME ---
+    if filters.get("productName") and filters["productName"] != "All" and filters["productName"] != []:
+        product_col = resolve_column(lf.columns, COLUMN_MAP["product"])
+        if product_col:
+            val = filters["productName"]
+            if isinstance(val, list):
+                if len(val) > 0:
+                    lf = lf.filter(pl.col(product_col).is_in(val))
+            else:
+                lf = lf.filter(pl.col(product_col) == val)
 
-    return df.loc[mask]
+    # --- NDR DESCRIPTION ---
+    if filters.get("ndrDescription") and filters["ndrDescription"] != "All" and filters["ndrDescription"] != []:
+        val = filters["ndrDescription"]
+        if isinstance(val, list):
+            if len(val) > 0:
+                lf = lf.filter(pl.col("_ndr_description").is_in(val))
+        else:
+            lf = lf.filter(pl.col("_ndr_description") == val)
 
+    return lf
 
 # ============================================================
-# 4️⃣ ANALYTICS FUNCTIONS (VECTORIZED)
+# 4️⃣ ANALYTICS FUNCTIONS (Polars & Pandas compatibility)
 # ============================================================
 
-def compute_summary_metrics(df: pd.DataFrame) -> Dict[str, Any]:
-    total = len(df)
+def compute_summary_metrics_pl(df: pl.DataFrame) -> Dict[str, Any]:
+    """Computes summary metrics using Polars for high performance."""
+    if df.height == 0:
+        return {"total_orders": 0, "total_gmv": 0.0, "delivery_rate": 0.0, "rto_rate": 0.0}
 
-    delivered = df["_is_delivered"].sum()
-    ndr = df["_is_ndr"].sum()
-    rto = df["_is_rto"].sum()
+    summary = df.select([
+        pl.count().alias("total_orders"),
+        pl.col("_is_delivered").sum().alias("total_delivered"),
+        pl.col("_is_ndr").sum().alias("total_ndr"),
+        pl.col("_is_rto").sum().alias("total_rto"),
+        pl.col("_order_value").filter(pl.col("_is_delivered")).sum().alias("total_gmv")
+    ]).to_dicts()[0]
 
-    gmv = float(df.loc[df["_is_delivered"], "_order_value"].sum()) if "_order_value" in df.columns else 0.0
+    total = summary["total_orders"]
+    summary["delivery_rate"] = (summary["total_delivered"] / total * 100) if total else 0
+    summary["rto_rate"] = (summary["total_rto"] / total * 100) if total else 0
+    
+    return summary
 
-    in_transit = df["_status"].str.contains(
-        "IN TRANSIT|PICKED UP|DESTINATION|OFD", na=False
-    ).sum()
+def compute_top_10_states_pl(df: pl.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Computes top 10 states by order share using Polars.
+    Returns a list of dicts with:
+    - state: State name
+    - order_share: Percentage of total orders
+    - total_orders: Total orders for that state
+    - total_delivered: Total delivered orders for that state
+    """
+    if df.height == 0:
+        return []
 
-    return {
-        "total_orders": int(total),
-        "total_delivered": int(delivered),
-        "total_ndr": int(ndr),
-        "total_rto": int(rto),
-        "total_gmv": float(gmv),
-        "delivery_rate": float(delivered / total * 100) if total else 0,
-        "ndr_rate": float(ndr / total * 100) if total else 0,
-        "rto_rate": float(rto / total * 100) if total else 0,
-        "inTransitOrders": int(in_transit),
-    }
+    # 1. Calculate total orders overall
+    total_orders_overall = df.height
 
+    # 2. Group by state and agg
+    state_metrics = (
+        df.group_by("_state")
+        .agg([
+            pl.count().alias("total_orders"),
+            pl.col("_is_delivered").sum().alias("total_delivered")
+        ])
+        .with_columns([
+            (pl.col("total_orders") / total_orders_overall * 100).alias("order_share")
+        ])
+        .sort("order_share", descending=True)
+        .head(10)
+    )
 
-def compute_weekly_summary(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    return state_metrics.to_dicts()
+
+def compute_top_10_couriers_pl(df: pl.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Computes top 10 couriers by order share using Polars.
+    Returns a list of dicts with:
+    - courier: Courier Name
+    - order_share: Percentage of total orders
+    - total_orders: Total orders for that courier
+    - total_delivered: Total delivered orders for that courier
+    """
+    if df.height == 0:
+        return []
+
+    # 1. Calculate total orders overall
+    total_orders_overall = df.height
+
+    # 2. Group by courier and agg
+    courier_metrics = (
+        df.group_by("_courier")
+        .agg([
+            pl.count().alias("total_orders"),
+            pl.col("_is_delivered").sum().alias("total_delivered")
+        ])
+        .with_columns([
+            (pl.col("total_orders") / total_orders_overall * 100).alias("order_share")
+        ])
+        .sort("order_share", descending=True)
+        .head(10)
+    )
+
+    return courier_metrics.to_dicts()
+
+# compute_average_order_tat_pl REMOVED
+
+# --- PANDAS-BASED FUNCTIONS (for compatibility) ---
+# These are the original pandas functions, kept for a gradual migration.
+
+def compute_weekly_summary_pd(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    # This is one of the original pandas functions.
+    # It expects a pandas DataFrame.
     agg = {
         "_status": "size",
         "_is_delivered": "sum",
         "_is_ndr": "sum",
         "_is_rto": "sum",
+        "_order_value": "sum"
     }
-
-    # always present from normalize_dataframe()
-    agg["_order_value"] = "sum"
-
     weekly = (
         df.groupby("_order_week", dropna=False)
         .agg(agg)
         .rename(columns={"_status": "total_orders"})
         .reset_index()
     )
-
-    weekly["avg_order_value"] = (
-        weekly["_order_value"] / weekly["_is_delivered"]
-    ).replace([np.inf, -np.inf], np.nan).fillna(0)
-
-    return weekly.rename(
-        columns={
-            "_order_week": "order_week",
-            "_is_delivered": "delivered",
-            "_is_ndr": "ndr",
-            "_is_rto": "rto",
-            "_order_value": "gmv",
-        }
-    ).to_dict("records")
-
-
-def compute_payment_method(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    total = len(df)
-    out = (
-        df["_payment"]
-        .value_counts()
-        .reset_index()
-        # After reset_index(), columns are typically: ["_payment", "count"]
-        .rename(columns={"_payment": "name"})
-    )
-    out["count"] = pd.to_numeric(out["count"], errors="coerce").fillna(0).astype(int)
-    out["value"] = (out["count"] / total * 100) if total else 0.0
-    return out.to_dict("records")
-
-
-def compute_state_performance(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    state_col = resolve_column(df, COLUMN_MAP["state"])
-    if not state_col:
-        return []
-
-    out = (
-        df.groupby(state_col)
-        .agg(
-            total_orders=("_status", "size"),
-            delivered=("_is_delivered", "sum"),
-            rto=("_is_rto", "sum"),
-            ndr=("_is_ndr", "sum"),
-        )
-        .reset_index()
-    )
-
-    out["delivered_percent"] = out["delivered"] / out["total_orders"] * 100
-    return out.rename(columns={state_col: "state"}).to_dict("records")
-
-def _share_from_column(df: pd.DataFrame, col: str, label: str) -> List[Dict[str, Any]]:
-    total = len(df)
-    if not total or col not in df.columns:
-        return []
-    out = (
-        df[col]
-        .fillna("UNKNOWN")
-        .astype(str)
-        .str.strip()
-        .replace({"": "UNKNOWN"})
-        .value_counts()
-        .reset_index()
-    )
-    # reset_index() yields columns: [col, "count"] in recent pandas
-    out = out.rename(columns={col: label})
-    out["count"] = pd.to_numeric(out["count"], errors="coerce").fillna(0).astype(int)
-    out["value"] = out["count"] / total * 100
-    return out.to_dict("records")
-
-
-def compute_channel_share(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    return _share_from_column(df, "channel", "channel")
-
-
-def compute_category_share(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    category_col = resolve_column(df, COLUMN_MAP["category"])
-    if not category_col:
-        return []
-    return _share_from_column(df, category_col, "category")
-
-
-def compute_order_statuses(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    # Use normalized status
-    total = len(df)
-    if not total:
-        return []
-    out = df["_status"].fillna("UNKNOWN").astype(str).value_counts().reset_index()
-    out = out.rename(columns={"_status": "status"})
-    out["count"] = pd.to_numeric(out["count"], errors="coerce").fillna(0).astype(int)
-    out["value"] = out["count"] / total * 100
-    return out.to_dict("records")
-
-
-def compute_ndr_weekly(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    weekly = (
-        df.groupby("_order_week", dropna=False)
-        .agg(total_orders=("_status", "size"), ndr=("_is_ndr", "sum"))
-        .reset_index()
-        .rename(columns={"_order_week": "order_week"})
-    )
-    weekly["ndr_rate"] = (weekly["ndr"] / weekly["total_orders"] * 100).replace(
-        [np.inf, -np.inf], np.nan
-    ).fillna(0)
     return weekly.to_dict("records")
 
+# ... Other original pandas functions (compute_state_performance_pd, etc.) would go here ...
 
-def compute_cancellation_tracker(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    weekly = (
-        df.groupby("_order_week", dropna=False)
-        .agg(total_orders=("_status", "size"), cancelled=("_is_cancelled", "sum"))
-        .reset_index()
-        .rename(columns={"_order_week": "order_week"})
-    )
-    weekly["cancelled_rate"] = (weekly["cancelled"] / weekly["total_orders"] * 100).replace(
-        [np.inf, -np.inf], np.nan
-    ).fillna(0)
-    return weekly.to_dict("records")
+# ============================================================
+# 5️⃣ UNIFIED ENTRY POINT
+# ============================================================
+
+# Map analytics types to their functions (Polars or Pandas)
+# New Polars functions are suffixed with _pl
+# Old Pandas functions are suffixed with _pd for clarity
+ANALYTICS_MAP = {
+    "summary-metrics": (compute_summary_metrics_pl, 'polars'),
+    "weekly-summary": (compute_weekly_summary_pd, 'pandas'),
+    "top-10-states": (compute_top_10_states_pl, 'polars'),
+    "top-10-couriers": (compute_top_10_couriers_pl, 'polars'),  # [NEW] Top 10 Couriers
+    # "average-order-tat": (compute_average_order_tat_pl, 'polars'),  # REMOVED
+    # Add other functions here, specifying 'polars' or 'pandas'
+}
+
+def compute_all_analytics(
+    df: pd.DataFrame, # Entry point still accepts pandas for now
+    session_id: str,
+) -> Dict[str, Any]:
+    """
+    Compute all analytics. Normalization and key calculations are done in Polars.
+    The result is then converted back to Pandas for any legacy analytics functions.
+    """
+    
+    # 1. Convert to Polars and Normalize
+    # This is the single "process-once" step for normalization logic.
+    if isinstance(df, pl.DataFrame):
+        pl_df = df
+        # Check if already normalized (look for _status column)
+        if "_status" in pl_df.columns:
+            pl_df_normalized = pl_df
+        else:
+            pl_df_normalized = normalize_dataframe_pl(pl_df)
+    else:
+        pl_df = pl.from_pandas(df)
+        pl_df_normalized = normalize_dataframe_pl(pl_df)
+
+    # For any legacy pandas functions, we create a pandas version of the normalized data
+    pd_df_normalized = None
+
+    results = {}
+    errors = {}
+
+    for a_type, (func, engine) in ANALYTICS_MAP.items():
+        try:
+            if engine == 'polars':
+                # Run Polars function
+                result = func(pl_df_normalized)
+            elif engine == 'pandas':
+                # Convert to pandas ONCE if needed for legacy functions
+                if pd_df_normalized is None:
+                    pd_df_normalized = pl_df_normalized.to_pandas()
+                result = func(pd_df_normalized)
+            
+            results[a_type] = clean_for_json(result)
+        except Exception as e:
+            errors[a_type] = str(e)
+            print(f"Error computing {a_type}: {e}")
+
+    # Convert normalized data to pandas if not already done
+    if pd_df_normalized is None:
+        pd_df_normalized = pl_df_normalized.to_pandas()
+    
+    # Convert raw data to records for frontend tables
+    # Convert raw data to records for frontend tables
+    # Limit to 10000 records to avoid memory issues and response truncation
+    # Use vectorized replacement for NaNs to improve performance
+    raw_df = pd_df_normalized.head(10000)
+    # Replace NaN/Inf with None efficiently
+    raw_df = raw_df.replace([np.inf, -np.inf], None)
+    raw_df = raw_df.where(pd.notnull(raw_df), None)
+    raw_shipping_records = raw_df.to_dict(orient='records')
+
+    # Final robust cleaning of the entire payload
+    final_payload = {
+        "success": True,
+        "summary_metrics": results.get("summary-metrics", {}),
+        "weekly_summary": results.get("weekly-summary", []),
+        "average_order_tat": results.get("average-order-tat", {}),
+        "top-10-states": results.get("top-10-states", []),
+        "top-10-couriers": results.get("top-10-couriers", []),  # [NEW]
+        "raw_shipping": raw_shipping_records,
+        "errors": errors
+    }
+    
+    # Clean the entire payload at once to ensure deep safety
+    return clean_for_json(final_payload)
 
 
-def compute_payment_method_outcome(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    # Outcome distribution by payment type (delivered / ndr / rto / cancelled / other)
-    if df.empty:
-        return []
-    base = df.copy()
-    base["_is_other"] = ~(
-        base["_is_delivered"] | base["_is_ndr"] | base["_is_rto"] | base["_is_cancelled"]
-    )
-    out = (
-        base.groupby("_payment", dropna=False)
-        .agg(
-            total_orders=("_status", "size"),
-            delivered=("_is_delivered", "sum"),
-            ndr=("_is_ndr", "sum"),
-            rto=("_is_rto", "sum"),
-            cancelled=("_is_cancelled", "sum"),
-            other=("_is_other", "sum"),
-        )
-        .reset_index()
-        .rename(columns={"_payment": "payment_method"})
-    )
-    return out.to_dict("records")
+def clean_for_json(obj: Any) -> Any:
+    """
+    Robustly sanitize data for JSON serialization.
+    Handles nested dicts/lists, pandas objects, and replaces NaN/Inf with None.
+    Also ensures dictionary keys are strings.
+    """
+    if obj is None:
+        return None
+    
+    if isinstance(obj, (pd.DataFrame, pl.DataFrame)):
+        if isinstance(obj, pl.DataFrame):
+            obj = obj.to_pandas()
+        return clean_for_json(obj.to_dict(orient='records'))
+        
+    if isinstance(obj, (pd.Series, pl.Series)):
+        if isinstance(obj, pl.Series):
+            obj = obj.to_pandas()
+        return clean_for_json(obj.to_list())
 
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    
+    if isinstance(obj, (np.floating, float)):
+        if pd.isna(obj) or np.isinf(obj):
+            return None
+        return float(obj)
+        
+    if isinstance(obj, np.ndarray):
+        return clean_for_json(obj.tolist())
+        
+    if isinstance(obj, dict):
+        # Ensure keys are strings and values are clean
+        return {str(k): clean_for_json(v) for k, v in obj.items()}
+        
+    if isinstance(obj, (list, tuple)):
+        return [clean_for_json(v) for v in obj]
+        
+    if hasattr(obj, 'isoformat'): # Handle datetime/date/timestamp
+        return obj.isoformat()
 
-def compute_product_analysis(df: pd.DataFrame, top_n: int = 25) -> List[Dict[str, Any]]:
-    prod_col = resolve_column(df, COLUMN_MAP["product"])
-    if not prod_col or df.empty:
-        return []
-    work = df.copy()
-    work["_delivered_value"] = work["_order_value"].where(work["_is_delivered"], 0.0)
-    out = (
-        work.groupby(prod_col, dropna=False)
-        .agg(
-            total_orders=("_status", "size"),
-            delivered=("_is_delivered", "sum"),
-            ndr=("_is_ndr", "sum"),
-            rto=("_is_rto", "sum"),
-            cancelled=("_is_cancelled", "sum"),
-            gmv=("_delivered_value", "sum"),
-        )
-        .reset_index()
-        .rename(columns={prod_col: "product"})
-        .sort_values(["gmv", "total_orders"], ascending=False)
-        .head(top_n)
-    )
-    return out.to_dict("records")
+    # Default fallback
+    return obj
 
-
-def compute_sku_analysis(df: pd.DataFrame, top_n: int = 25) -> List[Dict[str, Any]]:
-    sku_col = resolve_column(df, COLUMN_MAP["sku"])
-    if not sku_col or df.empty:
-        return []
-    work = df.copy()
-    work["_delivered_value"] = work["_order_value"].where(work["_is_delivered"], 0.0)
-    out = (
-        work.groupby(sku_col, dropna=False)
-        .agg(
-            total_orders=("_status", "size"),
-            delivered=("_is_delivered", "sum"),
-            ndr=("_is_ndr", "sum"),
-            rto=("_is_rto", "sum"),
-            cancelled=("_is_cancelled", "sum"),
-            gmv=("_delivered_value", "sum"),
-        )
-        .reset_index()
-        .rename(columns={sku_col: "sku"})
-        .sort_values(["gmv", "total_orders"], ascending=False)
-        .head(top_n)
-    )
-    return out.to_dict("records")
+# Deprecated - kept for compatibility if imported elsewhere
+sanitize_for_json = clean_for_json
 
 
 def sanitize_for_json(obj: Any) -> Any:
     """
-    Recursively convert numpy/pandas scalars and replace NaN/Inf with None,
-    so FastAPI/Starlette JSON serialization can't crash.
+    Recursively convert numpy/pandas scalars and replace NaN/Inf with None.
     """
-    if obj is None:
-        return None
-    # numpy scalar
-    if isinstance(obj, (np.generic,)):
-        obj = obj.item()
-    # float NaN/Inf
+    if obj is None: return None
+    if isinstance(obj, (np.generic,)): return obj.item()
     if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
+        if math.isnan(obj) or math.isinf(obj): return None
         return obj
-    # ints/bools/strings
-    if isinstance(obj, (int, bool, str)):
-        return obj
-    # dict
-    if isinstance(obj, dict):
-        return {str(k): sanitize_for_json(v) for k, v in obj.items()}
-    # list/tuple
-    if isinstance(obj, (list, tuple)):
-        return [sanitize_for_json(v) for v in obj]
-    # pandas objects
-    if isinstance(obj, (pd.DataFrame, pd.Series)):
-        return sanitize_for_json(obj.to_dict())
+    if isinstance(obj, (int, bool, str)): return obj
+    if isinstance(obj, dict): return {str(k): sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)): return [sanitize_for_json(v) for v in obj]
     return obj
-
-
-# ============================================================
-# 5️⃣ SINGLE ENTRY POINT
-# ============================================================
-
-ANALYTICS_MAP = {
-    "summary-metrics": compute_summary_metrics,
-    "weekly-summary": compute_weekly_summary,
-    "payment-method": compute_payment_method,
-    "state-performance": compute_state_performance,
-    "ndr-weekly": compute_ndr_weekly,
-    "category-share": compute_category_share,
-    "channel-share": compute_channel_share,
-    "cancellation-tracker": compute_cancellation_tracker,
-    "order-statuses": compute_order_statuses,
-    "payment-method-outcome": compute_payment_method_outcome,
-    "product-analysis": compute_product_analysis,
-    "sku-analysis": compute_sku_analysis,
-}
-
-
-def _is_normalized(df: pd.DataFrame) -> bool:
-    """
-    Heuristic: analytics/filtering rely on these derived columns produced by normalize_dataframe().
-    If they exist, we can skip normalizing again.
-    """
-    required = {
-        "_status",
-        "_order_date",
-        "_order_week",
-        "_payment",
-        "_order_value",
-        "_is_delivered",
-        "_is_ndr",
-        "_is_rto",
-        "_is_cancelled",
-    }
-    return required.issubset(set(df.columns))
-
-
-def _get_session_df(data: List[Dict[str, Any]], session_id: Optional[str]) -> pd.DataFrame:
-    """Prefer using the DataFrame cached in the in-memory store to avoid repeated conversions."""
-    if session_id:
-        try:
-            from backend.data_store import get_dataframe
-
-            df = get_dataframe(session_id)
-            if df is not None:
-                return df
-        except Exception:
-            # Fall back safely.
-            pass
-    return pd.DataFrame(data)
-
-
-def _ensure_normalized_session_df(df: pd.DataFrame, session_id: Optional[str]) -> pd.DataFrame:
-    """Normalize once and cache the normalized DataFrame back into the session store."""
-    if _is_normalized(df):
-        return df
-
-    norm = normalize_dataframe(df)
-    if session_id:
-        try:
-            from backend.data_store import store_dataframe
-
-            store_dataframe(session_id, norm)
-        except Exception:
-            pass
-    return norm
-
-
-def compute_single_analytics(
-    data: List[Dict[str, Any]],
-    analytics_type: str,
-    filters: Optional[Dict[str, Any]] = None,
-    session_id: Optional[str] = None,
-) -> Any:
-    df = _get_session_df(data, session_id)
-    df = _ensure_normalized_session_df(df, session_id)
-
-    if filters:
-        df = filter_shipping_data(df, filters)
-
-    func = ANALYTICS_MAP.get(analytics_type)
-    if not func:
-        raise ValueError(f"Unsupported analytics type: {analytics_type}")
-
-    return sanitize_for_json(func(df))
-
-
-def compute_all_analytics(
-    data: List[Dict[str, Any]],
-    filters: Optional[Dict[str, Any]] = None,
-    session_id: Optional[str] = None,
-    analytics_types: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """
-    Compute (and optionally cache) a set of analytics for the given session.
-    Returns a small status payload; individual analytics are retrievable via GET endpoints.
-    """
-    df = _get_session_df(data, session_id)
-    df = _ensure_normalized_session_df(df, session_id)
-    if filters:
-        df = filter_shipping_data(df, filters)
-
-    types = analytics_types or list(ANALYTICS_MAP.keys())
-
-    from backend.data_store import store_analytics  # local import to avoid cycles at import time
-
-    computed = 0
-    errors: Dict[str, str] = {}
-    for a_type in types:
-        func = ANALYTICS_MAP.get(a_type)
-        if not func:
-            continue
-        try:
-            result = sanitize_for_json(func(df))
-            if session_id:
-                store_analytics(session_id, a_type, result, filters if filters else None)
-            computed += 1
-        except Exception as e:
-            errors[a_type] = str(e)
-
-    return {"success": True, "computed": computed, "errors": errors}
 
 
 

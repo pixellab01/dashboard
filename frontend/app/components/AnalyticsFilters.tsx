@@ -5,11 +5,14 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 export interface FilterState {
   startDate: string | null
   endDate: string | null
-  orderStatus: string
-  paymentMethod: string
-  channel: string
+  orderStatus: string[] | string
+  paymentMethod: string[] | string
+  channel: string[] | string
+  state: string[] | string
+  courier: string[] | string
   sku: string[] | string
   productName: string[] | string
+  ndrDescription?: string[] | string
 }
 
 interface AnalyticsFiltersProps {
@@ -20,6 +23,10 @@ interface AnalyticsFiltersProps {
   availableProductNames: string[]
   availableProductNamesTop10: string[]
   availableStatuses: string[]
+  availablePaymentMethods?: string[]
+  availableStates?: string[]
+  availableCouriers?: string[]
+  availableNdrDescriptions?: string[]
   sessionId?: string
   onFilterOptionsChange?: (channel?: string, sku?: string) => void
 }
@@ -32,27 +39,54 @@ export default function AnalyticsFilters({
   availableProductNames,
   availableProductNamesTop10,
   availableStatuses,
+  availablePaymentMethods = [],
+  availableStates = [],
+  availableCouriers = [],
+  availableNdrDescriptions = [],
   sessionId,
   onFilterOptionsChange,
 }: AnalyticsFiltersProps) {
   const [filters, setFilters] = useState<FilterState>({
     startDate: null,
     endDate: null,
-    orderStatus: 'All',
-    paymentMethod: 'All',
-    channel: 'All',
+    orderStatus: [],
+    paymentMethod: [],
+    channel: [],
+    state: [],
+    courier: [],
     sku: [],
     productName: [],
+    ndrDescription: [],
   })
-  
+
   const [isCustomRange, setIsCustomRange] = useState(false)
   const [skuSearch, setSkuSearch] = useState('')
   const [productNameSearch, setProductNameSearch] = useState('')
+  const [stateSearch, setStateSearch] = useState('')
+  const [courierSearch, setCourierSearch] = useState('')
+  const [ndrDescriptionSearch, setNdrDescriptionSearch] = useState('')
+  const [channelSearch, setChannelSearch] = useState('')
+  const [orderStatusSearch, setOrderStatusSearch] = useState('')
+  const [paymentMethodSearch, setPaymentMethodSearch] = useState('')
+
   const [showSkuSearch, setShowSkuSearch] = useState(false)
   const [showProductNameSearch, setShowProductNameSearch] = useState(false)
+  const [showStateSearch, setShowStateSearch] = useState(false)
+  const [showCourierSearch, setShowCourierSearch] = useState(false)
+  const [showNdrDescriptionSearch, setShowNdrDescriptionSearch] = useState(false)
+  const [showChannelSearch, setShowChannelSearch] = useState(false)
+  const [showOrderStatusSearch, setShowOrderStatusSearch] = useState(false)
+  const [showPaymentMethodSearch, setShowPaymentMethodSearch] = useState(false)
+
   const skuSearchRef = useRef<HTMLDivElement>(null)
   const productNameSearchRef = useRef<HTMLDivElement>(null)
-  
+  const stateSearchRef = useRef<HTMLDivElement>(null)
+  const courierSearchRef = useRef<HTMLDivElement>(null)
+  const ndrDescriptionSearchRef = useRef<HTMLDivElement>(null)
+  const channelSearchRef = useRef<HTMLDivElement>(null)
+  const orderStatusSearchRef = useRef<HTMLDivElement>(null)
+  const paymentMethodSearchRef = useRef<HTMLDivElement>(null)
+
   // Cascading filter options - filtered based on channel/SKU selection
   const [filteredSkus, setFilteredSkus] = useState<string[]>(availableSkus)
   const [filteredSkusTop10, setFilteredSkusTop10] = useState<string[]>(availableSkusTop10)
@@ -61,13 +95,23 @@ export default function AnalyticsFilters({
 
   // Helper to get selected SKUs as array
   const selectedSkus = Array.isArray(filters.sku) ? filters.sku : (filters.sku === 'All' || !filters.sku ? [] : [filters.sku])
-  
+
   // Helper to get selected Product Names as array
   const selectedProductNames = Array.isArray(filters.productName) ? filters.productName : (filters.productName === 'All' || !filters.productName ? [] : [filters.productName])
 
+  // Helper to get selected States as array
+  const selectedStates = Array.isArray(filters.state) ? filters.state : (filters.state === 'All' || !filters.state ? [] : [filters.state])
+
+  // Helper to get selected Couriers as array
+  const selectedCouriers = Array.isArray(filters.courier) ? filters.courier : (filters.courier === 'All' || !filters.courier ? [] : [filters.courier])
+
+  // Helper to get selected NDR Descriptions as array
+  const selectedNdrDescriptions = Array.isArray(filters.ndrDescription) ? filters.ndrDescription : (filters.ndrDescription === 'All' || !filters.ndrDescription ? [] : [filters.ndrDescription])
+
   // Sync filtered options with props when no channel/SKU filter is active
   useEffect(() => {
-    if (filters.channel === 'All' || !filters.channel) {
+    const channelEmpty = Array.isArray(filters.channel) ? filters.channel.length === 0 : filters.channel === 'All' || !filters.channel
+    if (channelEmpty) {
       setFilteredSkus(availableSkus)
       setFilteredSkusTop10(availableSkusTop10)
     }
@@ -90,31 +134,40 @@ export default function AnalyticsFilters({
       setFilteredProductNamesTop10(availableProductNamesTop10)
       return
     }
-    
+
     const fetchFilteredOptions = async () => {
       try {
         const params = new URLSearchParams()
         params.append('sessionId', sessionId)
-        if (filters.channel && filters.channel !== 'All') {
-          params.append('channel', filters.channel)
+        if (filters.channel && filters.channel !== 'All' && filters.channel.length > 0) {
+          // If channel is array, potentially send multiple? API might expect one or comma-separated.
+          // For now, if multiple channels selected, maybe don't filter options or send all?
+          // The API endpoint likely needs to handle list. 
+          // Assuming API `filter-options` might only handle single channel for cascading for now, 
+          // OR we need to update it. 
+          // Let's pass array as comma separated if it's an array, or single string.
+          const channelVal = Array.isArray(filters.channel) ? filters.channel.join(',') : filters.channel
+          params.append('channel', channelVal)
         }
         if (selectedSkus.length > 0 && selectedSkus[0]) {
           params.append('sku', selectedSkus[0]) // Use first selected SKU for filtering
         }
-        
+
         const response = await fetch(`/api/analytics/filter-options?${params.toString()}`)
         const data = await response.json()
-        
+
         if (data.success) {
           // Update SKU options if channel is selected
-          if (filters.channel && filters.channel !== 'All') {
+          const channelActive = Array.isArray(filters.channel) ? filters.channel.length > 0 : filters.channel !== 'All' && filters.channel
+
+          if (channelActive) {
             setFilteredSkus(data.skus || [])
             setFilteredSkusTop10(data.skusTop10 || [])
           } else {
             setFilteredSkus(availableSkus)
             setFilteredSkusTop10(availableSkusTop10)
           }
-          
+
           // Update Product Name options if SKU is selected
           if (selectedSkus.length > 0 && selectedSkus[0]) {
             setFilteredProductNames(data.productNames || [])
@@ -123,16 +176,17 @@ export default function AnalyticsFilters({
             setFilteredProductNames(availableProductNames)
             setFilteredProductNamesTop10(availableProductNamesTop10)
           }
-          
+
           // Clear selections if they're no longer valid
-          if (filters.channel && filters.channel !== 'All') {
+          const channelActiveForSku = Array.isArray(filters.channel) ? filters.channel.length > 0 : filters.channel !== 'All' && filters.channel
+          if (channelActiveForSku) {
             const validSkus = data.skus || []
             const currentSkus = selectedSkus.filter(sku => validSkus.includes(sku))
             if (currentSkus.length !== selectedSkus.length) {
               setFilters(prev => ({ ...prev, sku: currentSkus.length > 0 ? currentSkus : [] }))
             }
           }
-          
+
           if (selectedSkus.length > 0 && selectedSkus[0]) {
             const validProducts = data.productNames || []
             const currentProducts = selectedProductNames.filter(name => validProducts.includes(name))
@@ -150,9 +204,9 @@ export default function AnalyticsFilters({
         setFilteredProductNamesTop10(availableProductNamesTop10)
       }
     }
-    
+
     fetchFilteredOptions()
-  }, [sessionId, filters.channel, selectedSkus.join(','), availableSkus, availableSkusTop10, availableProductNames, availableProductNamesTop10, selectedProductNames.length])
+  }, [sessionId, Array.isArray(filters.channel) ? filters.channel.join(',') : filters.channel, selectedSkus.join(','), availableSkus, availableSkusTop10, availableProductNames, availableProductNamesTop10, selectedProductNames.length])
 
   // Reset filtered options when channel/SKU is cleared (handled in main useEffect above)
 
@@ -174,6 +228,30 @@ export default function AnalyticsFilters({
       .slice(0, 20) // Limit to 20 results for performance
   }, [productNameSearch, filteredProductNames])
 
+  // Filter States based on search
+  const searchedStates = useMemo(() => {
+    if (!stateSearch.trim()) return availableStates || []
+    const searchLower = stateSearch.toLowerCase()
+    return (availableStates || [])
+      .filter(state => state.toLowerCase().includes(searchLower))
+  }, [stateSearch, availableStates])
+
+  // Filter Couriers based on search
+  const searchedCouriers = useMemo(() => {
+    if (!courierSearch.trim()) return availableCouriers || []
+    const searchLower = courierSearch.toLowerCase()
+    return (availableCouriers || [])
+      .filter(courier => courier.toLowerCase().includes(searchLower))
+  }, [courierSearch, availableCouriers])
+
+  // Filter NDR Descriptions based on search
+  const searchedNdrDescriptions = useMemo(() => {
+    if (!ndrDescriptionSearch.trim()) return availableNdrDescriptions || []
+    const searchLower = ndrDescriptionSearch.toLowerCase()
+    return (availableNdrDescriptions || [])
+      .filter(desc => desc.toLowerCase().includes(searchLower))
+  }, [ndrDescriptionSearch, availableNdrDescriptions])
+
   // Close search dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -185,15 +263,27 @@ export default function AnalyticsFilters({
         setShowProductNameSearch(false)
         setProductNameSearch('')
       }
+      if (stateSearchRef.current && !stateSearchRef.current.contains(event.target as Node)) {
+        setShowStateSearch(false)
+        setStateSearch('')
+      }
+      if (courierSearchRef.current && !courierSearchRef.current.contains(event.target as Node)) {
+        setShowCourierSearch(false)
+        setCourierSearch('')
+      }
+      if (ndrDescriptionSearchRef.current && !ndrDescriptionSearchRef.current.contains(event.target as Node)) {
+        setShowNdrDescriptionSearch(false)
+        setNdrDescriptionSearch('')
+      }
     }
 
-    if (showSkuSearch || showProductNameSearch) {
+    if (showSkuSearch || showProductNameSearch || showStateSearch || showCourierSearch || showNdrDescriptionSearch) {
       document.addEventListener('mousedown', handleClickOutside)
       return () => {
         document.removeEventListener('mousedown', handleClickOutside)
       }
     }
-  }, [showSkuSearch, showProductNameSearch])
+  }, [showSkuSearch, showProductNameSearch, showStateSearch, showCourierSearch, showNdrDescriptionSearch])
 
   const handleApplyFilters = () => {
     // Validate date range before applying
@@ -201,13 +291,74 @@ export default function AnalyticsFilters({
       alert('⚠️ Start date cannot be after end date. Please check your date range.')
       return
     }
-    // Ensure arrays are used for sku and productName
+    // Ensure arrays are used for all multi-select fields
     const filtersToApply = {
       ...filters,
-      sku: selectedSkus.length > 0 ? selectedSkus : 'All',
-      productName: selectedProductNames.length > 0 ? selectedProductNames : 'All',
+      sku: filters.sku.length > 0 ? filters.sku : 'All',
+      productName: filters.productName.length > 0 ? filters.productName : 'All',
+      state: filters.state.length > 0 ? filters.state : 'All',
+      courier: filters.courier.length > 0 ? filters.courier : 'All',
+      ndrDescription: filters.ndrDescription && filters.ndrDescription.length > 0 ? filters.ndrDescription : 'All',
+      orderStatus: Array.isArray(filters.orderStatus) && filters.orderStatus.length > 0 ? filters.orderStatus : 'All',
+      paymentMethod: Array.isArray(filters.paymentMethod) && filters.paymentMethod.length > 0 ? filters.paymentMethod : 'All',
+      channel: Array.isArray(filters.channel) && filters.channel.length > 0 ? filters.channel : 'All',
     }
     onFilterChange(filtersToApply)
+  }
+
+  const toggleChannel = (channel: string) => {
+    const currentChannels = Array.isArray(filters.channel) ? filters.channel : []
+    const newChannels = currentChannels.includes(channel)
+      ? currentChannels.filter(c => c !== channel)
+      : [...currentChannels, channel]
+
+    setFilters(prev => ({
+      ...prev,
+      channel: newChannels,
+      // Clear dependent filters
+      sku: [],
+      productName: []
+    }))
+  }
+
+  const toggleOrderStatus = (status: string) => {
+    const currentStatuses = Array.isArray(filters.orderStatus) ? filters.orderStatus : []
+    const newStatuses = currentStatuses.includes(status)
+      ? currentStatuses.filter(s => s !== status)
+      : [...currentStatuses, status]
+    setFilters(prev => ({ ...prev, orderStatus: newStatuses }))
+  }
+
+  const togglePaymentMethod = (method: string) => {
+    const currentMethods = Array.isArray(filters.paymentMethod) ? filters.paymentMethod : []
+    const newMethods = currentMethods.includes(method)
+      ? currentMethods.filter(m => m !== method)
+      : [...currentMethods, method]
+    setFilters(prev => ({ ...prev, paymentMethod: newMethods }))
+  }
+
+  const toggleState = (state: string) => {
+    const currentStates = selectedStates
+    const newStates = currentStates.includes(state)
+      ? currentStates.filter(s => s !== state)
+      : [...currentStates, state]
+    setFilters(prev => ({ ...prev, state: newStates }))
+  }
+
+  const toggleCourier = (courier: string) => {
+    const currentCouriers = selectedCouriers
+    const newCouriers = currentCouriers.includes(courier)
+      ? currentCouriers.filter(c => c !== courier)
+      : [...currentCouriers, courier]
+    setFilters(prev => ({ ...prev, courier: newCouriers }))
+  }
+
+  const toggleNdrDescription = (desc: string) => {
+    const currentDescriptions = selectedNdrDescriptions
+    const newDescriptions = currentDescriptions.includes(desc)
+      ? currentDescriptions.filter(d => d !== desc)
+      : [...currentDescriptions, desc]
+    setFilters(prev => ({ ...prev, ndrDescription: newDescriptions }))
   }
 
   const toggleSku = (sku: string) => {
@@ -215,8 +366,8 @@ export default function AnalyticsFilters({
     const newSkus = currentSkus.includes(sku)
       ? currentSkus.filter(s => s !== sku)
       : [...currentSkus, sku]
-    setFilters(prev => ({ 
-      ...prev, 
+    setFilters(prev => ({
+      ...prev,
       sku: newSkus,
       // Clear Product Name when SKU changes (cascading filter)
       productName: []
@@ -230,6 +381,7 @@ export default function AnalyticsFilters({
       : [...currentProducts, productName]
     setFilters(prev => ({ ...prev, productName: newProducts }))
   }
+
 
   const handleDateRangeChange = (start: string | null, end: string | null) => {
     setFilters(prev => ({ ...prev, startDate: start, endDate: end }))
@@ -284,123 +436,444 @@ export default function AnalyticsFilters({
         </div>
 
         {/* Order Status */}
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 relative" ref={orderStatusSearchRef}>
           <label className="text-gray-300 text-sm font-medium">Order Status</label>
-          <select
-            value={filters.orderStatus}
-            onChange={(e) => setFilters(prev => ({ ...prev, orderStatus: e.target.value }))}
-            className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            title={availableStatuses.length > 0 ? `Available statuses: ${availableStatuses.join(', ')}` : 'Select status'}
-          >
-            <option value="All">All</option>
-            {availableStatuses.length > 0 ? (
-              // Use the predefined status list from API
-              availableStatuses.map((status) => {
-                // Map status values to display-friendly names
-                // Keep the original status value for filtering, but show friendly name
-                const statusStr = String(status).trim()
-                const statusUpper = statusStr.toUpperCase()
-                
-                // Create display name mapping
-                const displayNameMap: Record<string, string> = {
-                  'CANCELED': 'Canceled',
-                  'DELIVERED': 'Delivered',
-                  'DESTROYED': 'Destroyed',
-                  'IN TRANSIT': 'In Transit',
-                  'IN TRANSIT-AT DESTINATION HUB': 'In Transit - At Destination Hub',
-                  'LOST': 'Lost',
-                  'OUT FOR DELIVERY': 'Out for Delivery',
-                  'OUT FOR PICKUP': 'Out for Pickup',
-                  'PICKED UP': 'Picked Up',
-                  'PICKUP EXCEPTION': 'Pickup Exception',
-                  'REACHED BACK AT_SELLER_CITY': 'Reached Back at Seller City',
-                  'REACHED DESTINATION HUB': 'Reached Destination Hub',
-                  'RTO DELIVERED': 'RTO Delivered',
-                  'RTO IN TRANSIT': 'RTO In Transit',
-                  'RTO INITIATED': 'RTO Initiated',
-                  'RTO NDR': 'RTO NDR',
-                  'UNDELIVERED': 'Undelivered',
-                  'UNDELIVERED-1ST ATTEMPT': 'Undelivered - 1st Attempt',
-                  'UNDELIVERED-2ND ATTEMPT': 'Undelivered - 2nd Attempt',
-                  'UNDELIVERED-3RD ATTEMPT': 'Undelivered - 3rd Attempt',
-                  'UNTRACEABLE': 'Untraceable'
-                }
-                
-                const displayName = displayNameMap[statusUpper] || statusStr
-                
-                return (
-                  <option key={status} value={statusStr}>
-                    {displayName}
-                  </option>
-                )
-              })
-            ) : (
-              // Fallback to predefined statuses if API doesn't return them
-              <>
-                <option value="CANCELED">Canceled</option>
-                <option value="DELIVERED">Delivered</option>
-                <option value="DESTROYED">Destroyed</option>
-                <option value="IN TRANSIT">In Transit</option>
-                <option value="IN TRANSIT-AT DESTINATION HUB">In Transit - At Destination Hub</option>
-                <option value="LOST">Lost</option>
-                <option value="OUT FOR DELIVERY">Out for Delivery</option>
-                <option value="OUT FOR PICKUP">Out for Pickup</option>
-                <option value="PICKED UP">Picked Up</option>
-                <option value="PICKUP EXCEPTION">Pickup Exception</option>
-                <option value="REACHED BACK AT_SELLER_CITY">Reached Back at Seller City</option>
-                <option value="REACHED DESTINATION HUB">Reached Destination Hub</option>
-                <option value="RTO DELIVERED">RTO Delivered</option>
-                <option value="RTO IN TRANSIT">RTO In Transit</option>
-                <option value="RTO INITIATED">RTO Initiated</option>
-                <option value="RTO NDR">RTO NDR</option>
-                <option value="UNDELIVERED">Undelivered</option>
-                <option value="UNDELIVERED-1st Attempt">Undelivered - 1st Attempt</option>
-                <option value="UNDELIVERED-2nd Attempt">Undelivered - 2nd Attempt</option>
-                <option value="UNDELIVERED-3rd Attempt">Undelivered - 3rd Attempt</option>
-                <option value="UNTRACEABLE">Untraceable</option>
-              </>
+          <div className="relative">
+            <div className="w-full px-3 py-2 pr-16 bg-gray-900 border border-gray-600 rounded-md text-white text-sm flex items-center gap-2">
+              <span className="truncate">
+                {(Array.isArray(filters.orderStatus) ? filters.orderStatus : []).length === 0 ? 'All' : `${(Array.isArray(filters.orderStatus) ? filters.orderStatus : []).length} selected`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowOrderStatusSearch(!showOrderStatusSearch)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-800 rounded"
+              title="Search and select order statuses"
+            >
+              Search
+            </button>
+            {showOrderStatusSearch && (
+              <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-600 rounded-md shadow-lg w-full max-w-[calc(100vw-2rem)] lg:max-w-[350px]">
+                <div className="p-2 border-b border-gray-600">
+                  <input
+                    type="text"
+                    value={orderStatusSearch}
+                    onChange={(e) => setOrderStatusSearch(e.target.value)}
+                    placeholder="Search statuses..."
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  {(Array.isArray(filters.orderStatus) ? filters.orderStatus : []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {(Array.isArray(filters.orderStatus) ? filters.orderStatus : []).map((status) => (
+                        <span
+                          key={status}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded"
+                        >
+                          <span className="truncate max-w-[100px]">{status}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleOrderStatus(status)}
+                            className="hover:text-red-300 flex-shrink-0"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="max-h-60 overflow-y-auto">
+                  {availableStatuses
+                    .filter(status => status.toLowerCase().includes(orderStatusSearch.toLowerCase()))
+                    .map((status) => (
+                      <label
+                        key={status}
+                        className="flex items-center gap-2 px-3 py-2 text-white text-xs hover:bg-gray-700 border-b border-gray-700 last:border-b-0 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={(Array.isArray(filters.orderStatus) ? filters.orderStatus : []).includes(status)}
+                          onChange={() => toggleOrderStatus(status)}
+                          className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 flex-shrink-0"
+                        />
+                        <span className="flex-1">{status}</span>
+                      </label>
+                    ))}
+                  {availableStatuses.length === 0 && (
+                    <div className="px-3 py-2 text-gray-400 text-xs">No statuses found</div>
+                  )}
+                </div>
+              </div>
             )}
-          </select>
+          </div>
         </div>
 
         {/* Payment Method */}
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 relative" ref={paymentMethodSearchRef}>
           <label className="text-gray-300 text-sm font-medium">Payment Method</label>
-          <select
-            value={filters.paymentMethod}
-            onChange={(e) => setFilters(prev => ({ ...prev, paymentMethod: e.target.value }))}
-            className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="All">All</option>
-            <option value="COD">COD</option>
-            <option value="Online">Online</option>
-            <option value="NaN">NaN</option>
-          </select>
+          <div className="relative">
+            <div className="w-full px-3 py-2 pr-16 bg-gray-900 border border-gray-600 rounded-md text-white text-sm flex items-center gap-2">
+              <span className="truncate">
+                {(Array.isArray(filters.paymentMethod) ? filters.paymentMethod : []).length === 0 ? 'All' : `${(Array.isArray(filters.paymentMethod) ? filters.paymentMethod : []).length} selected`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPaymentMethodSearch(!showPaymentMethodSearch)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-800 rounded"
+              title="Search and select payment methods"
+            >
+              Search
+            </button>
+            {showPaymentMethodSearch && (
+              <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-600 rounded-md shadow-lg w-full max-w-[calc(100vw-2rem)] lg:max-w-[350px]">
+                <div className="p-2 border-b border-gray-600">
+                  <input
+                    type="text"
+                    value={paymentMethodSearch}
+                    onChange={(e) => setPaymentMethodSearch(e.target.value)}
+                    placeholder="Search payment methods..."
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  {(Array.isArray(filters.paymentMethod) ? filters.paymentMethod : []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {(Array.isArray(filters.paymentMethod) ? filters.paymentMethod : []).map((method) => (
+                        <span
+                          key={method}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded"
+                        >
+                          <span className="truncate max-w-[100px]">{method}</span>
+                          <button
+                            type="button"
+                            onClick={() => togglePaymentMethod(method)}
+                            className="hover:text-red-300 flex-shrink-0"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="max-h-60 overflow-y-auto">
+                  {availablePaymentMethods
+                    .filter(method => method.toLowerCase().includes(paymentMethodSearch.toLowerCase()))
+                    .map((method) => (
+                      <label
+                        key={method}
+                        className="flex items-center gap-2 px-3 py-2 text-white text-xs hover:bg-gray-700 border-b border-gray-700 last:border-b-0 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={(Array.isArray(filters.paymentMethod) ? filters.paymentMethod : []).includes(method)}
+                          onChange={() => togglePaymentMethod(method)}
+                          className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 flex-shrink-0"
+                        />
+                        <span className="flex-1">{method}</span>
+                      </label>
+                    ))}
+                  {availablePaymentMethods.length === 0 && (
+                    <div className="px-3 py-2 text-gray-400 text-xs">No payment methods found</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Channel */}
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 relative" ref={channelSearchRef}>
           <label className="text-gray-300 text-sm font-medium">Channel</label>
-          <select
-            value={filters.channel}
-            onChange={(e) => {
-              setFilters(prev => ({ 
-                ...prev, 
-                channel: e.target.value,
-                // Clear SKU and Product Name when channel changes (cascading filter)
-                sku: [],
-                productName: []
-              }))
-            }}
-            className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="All">All</option>
-            {availableChannels.map((channel) => (
-              <option key={channel} value={channel}>
-                {channel}
-              </option>
-            ))}
-          </select>
+          <div className="relative">
+            <div className="w-full px-3 py-2 pr-16 bg-gray-900 border border-gray-600 rounded-md text-white text-sm flex items-center gap-2">
+              <span className="truncate">
+                {(Array.isArray(filters.channel) ? filters.channel : []).length === 0 ? 'All' : `${(Array.isArray(filters.channel) ? filters.channel : []).length} selected`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowChannelSearch(!showChannelSearch)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-800 rounded"
+              title="Search and select channels"
+            >
+              Search
+            </button>
+            {showChannelSearch && (
+              <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-600 rounded-md shadow-lg w-full max-w-[calc(100vw-2rem)] lg:max-w-[350px]">
+                <div className="p-2 border-b border-gray-600">
+                  <input
+                    type="text"
+                    value={channelSearch}
+                    onChange={(e) => setChannelSearch(e.target.value)}
+                    placeholder="Search channels..."
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  {(Array.isArray(filters.channel) ? filters.channel : []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {(Array.isArray(filters.channel) ? filters.channel : []).map((channel) => (
+                        <span
+                          key={channel}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded"
+                        >
+                          <span className="truncate max-w-[100px]">{channel}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleChannel(channel)}
+                            className="hover:text-red-300 flex-shrink-0"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="max-h-60 overflow-y-auto">
+                  {availableChannels
+                    .filter(channel => channel.toLowerCase().includes(channelSearch.toLowerCase()))
+                    .map((channel) => (
+                      <label
+                        key={channel}
+                        className="flex items-center gap-2 px-3 py-2 text-white text-xs hover:bg-gray-700 border-b border-gray-700 last:border-b-0 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={(Array.isArray(filters.channel) ? filters.channel : []).includes(channel)}
+                          onChange={() => toggleChannel(channel)}
+                          className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 flex-shrink-0"
+                        />
+                        <span className="flex-1">{channel}</span>
+                      </label>
+                    ))}
+                  {availableChannels.length === 0 && (
+                    <div className="px-3 py-2 text-gray-400 text-xs">No channels found</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* State */}
+        <div className="flex flex-col gap-2 relative" ref={stateSearchRef}>
+          <label className="text-gray-300 text-sm font-medium">State</label>
+          <div className="relative">
+            <div className="w-full px-3 py-2 pr-16 bg-gray-900 border border-gray-600 rounded-md text-white text-sm flex items-center gap-2">
+              <span className="truncate">
+                {selectedStates.length === 0 ? 'All' : `${selectedStates.length} selected`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowStateSearch(!showStateSearch)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-800 rounded"
+              title="Search and select states"
+            >
+              Search
+            </button>
+            {showStateSearch && (
+              <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-600 rounded-md shadow-lg w-full max-w-[calc(100vw-2rem)] lg:max-w-[350px]">
+                <div className="p-2 border-b border-gray-600">
+                  <input
+                    type="text"
+                    value={stateSearch}
+                    onChange={(e) => setStateSearch(e.target.value)}
+                    placeholder="Search states..."
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  {selectedStates.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {selectedStates.map((state) => (
+                        <span
+                          key={state}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded"
+                        >
+                          <span className="truncate max-w-[100px]">{state}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleState(state)}
+                            className="hover:text-red-300 flex-shrink-0"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="max-h-60 overflow-y-auto">
+                  {searchedStates.length > 0 ? (
+                    searchedStates.map((state) => (
+                      <label
+                        key={state}
+                        className="flex items-center gap-2 px-3 py-2 text-white text-xs hover:bg-gray-700 border-b border-gray-700 last:border-b-0 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedStates.includes(state)}
+                          onChange={() => toggleState(state)}
+                          className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 flex-shrink-0"
+                        />
+                        <span className="flex-1">{state}</span>
+                      </label>
+                    ))
+                  ) : (
+                    <div className="px-3 py-2 text-gray-400 text-xs">No states found</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Courier */}
+        <div className="flex flex-col gap-2 relative" ref={courierSearchRef}>
+          <label className="text-gray-300 text-sm font-medium">Delivery Partner</label>
+          <div className="relative">
+            <div className="w-full px-3 py-2 pr-16 bg-gray-900 border border-gray-600 rounded-md text-white text-sm flex items-center gap-2">
+              <span className="truncate">
+                {selectedCouriers.length === 0 ? 'All' : `${selectedCouriers.length} selected`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowCourierSearch(!showCourierSearch)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-800 rounded"
+              title="Search and select delivery partners"
+            >
+              Search
+            </button>
+            {showCourierSearch && (
+              <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-600 rounded-md shadow-lg w-full max-w-[calc(100vw-2rem)] lg:max-w-[350px]">
+                <div className="p-2 border-b border-gray-600">
+                  <input
+                    type="text"
+                    value={courierSearch}
+                    onChange={(e) => setCourierSearch(e.target.value)}
+                    placeholder="Search delivery partners..."
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  {selectedCouriers.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {selectedCouriers.map((courier) => (
+                        <span
+                          key={courier}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded"
+                        >
+                          <span className="truncate max-w-[100px]">{courier}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleCourier(courier)}
+                            className="hover:text-red-300 flex-shrink-0"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="max-h-60 overflow-y-auto">
+                  {searchedCouriers.length > 0 ? (
+                    searchedCouriers.map((courier) => (
+                      <label
+                        key={courier}
+                        className="flex items-center gap-2 px-3 py-2 text-white text-xs hover:bg-gray-700 border-b border-gray-700 last:border-b-0 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedCouriers.includes(courier)}
+                          onChange={() => toggleCourier(courier)}
+                          className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 flex-shrink-0"
+                        />
+                        <span className="flex-1">{courier}</span>
+                      </label>
+                    ))
+                  ) : (
+                    <div className="px-3 py-2 text-gray-400 text-xs">No delivery partners found</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* NDR Description */}
+        <div className="flex flex-col gap-2 relative" ref={ndrDescriptionSearchRef}>
+          <label className="text-gray-300 text-sm font-medium">NDR Description</label>
+          <div className="relative">
+            <div className="w-full px-3 py-2 pr-16 bg-gray-900 border border-gray-600 rounded-md text-white text-sm flex items-center gap-2">
+              <span className="truncate">
+                {selectedNdrDescriptions.length === 0 ? 'All' : `${selectedNdrDescriptions.length} selected`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowNdrDescriptionSearch(!showNdrDescriptionSearch)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-800 rounded"
+              title="Search and select NDR descriptions"
+            >
+              Search
+            </button>
+            {showNdrDescriptionSearch && (
+              <div className="absolute top-full left-0 mt-1 z-50 bg-gray-900 border border-gray-600 rounded-md shadow-lg w-full max-w-[calc(100vw-2rem)] lg:max-w-[350px]">
+                <div className="p-2 border-b border-gray-600">
+                  <input
+                    type="text"
+                    value={ndrDescriptionSearch}
+                    onChange={(e) => setNdrDescriptionSearch(e.target.value)}
+                    placeholder="Search NDR descriptions..."
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  {selectedNdrDescriptions.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {selectedNdrDescriptions.map((desc) => (
+                        <span
+                          key={desc}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded"
+                        >
+                          <span className="truncate max-w-[100px]">{desc}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleNdrDescription(desc)}
+                            className="hover:text-red-300 flex-shrink-0"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="max-h-60 overflow-y-auto">
+                  {searchedNdrDescriptions.length > 0 ? (
+                    searchedNdrDescriptions.map((desc) => (
+                      <label
+                        key={desc}
+                        className="flex items-center gap-2 px-3 py-2 text-white text-xs hover:bg-gray-700 border-b border-gray-700 last:border-b-0 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedNdrDescriptions.includes(desc)}
+                          onChange={() => toggleNdrDescription(desc)}
+                          className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 flex-shrink-0"
+                        />
+                        <span className="flex-1">{desc}</span>
+                      </label>
+                    ))
+                  ) : (
+                    <div className="px-3 py-2 text-gray-400 text-xs">No NDR descriptions found</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* SKU */}
@@ -622,14 +1095,24 @@ export default function AnalyticsFilters({
                 orderStatus: 'All',
                 paymentMethod: 'All',
                 channel: 'All',
+                state: [],
+                courier: [],
                 sku: [],
                 productName: [],
+                ndrDescription: [],
+
               })
               setIsCustomRange(false)
               setSkuSearch('')
               setProductNameSearch('')
+              setStateSearch('')
+              setCourierSearch('')
+              setNdrDescriptionSearch('')
               setShowSkuSearch(false)
               setShowProductNameSearch(false)
+              setShowStateSearch(false)
+              setShowCourierSearch(false)
+              setShowNdrDescriptionSearch(false)
               // Apply cleared filters immediately
               onFilterChange({
                 startDate: null,
@@ -637,8 +1120,12 @@ export default function AnalyticsFilters({
                 orderStatus: 'All',
                 paymentMethod: 'All',
                 channel: 'All',
+                state: [],
+                courier: [],
                 sku: [],
                 productName: [],
+                ndrDescription: [],
+
               })
             }}
             className="w-full px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium transition-colors"
@@ -647,6 +1134,6 @@ export default function AnalyticsFilters({
           </button>
         </div>
       </div>
-    </div>
+    </div >
   )
 }

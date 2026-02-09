@@ -10,83 +10,54 @@ import json
 import uuid
 
 from backend.data_preprocessing import preprocess_shipping_data
+from backend.data_store import store_dataframe_as_parquet
 
 
-def load_data_from_json(data: List[Dict[str, Any]], session_id: Optional[str] = None) -> tuple:
+def process_and_store_data(df: pd.DataFrame, session_id: str):
     """
-    Load data from JSON list and preprocess it
-    Returns (session_id, processed_data)
-    Note: Redis has been removed. Data is returned directly.
+    Preprocesses a DataFrame and stores it in the persistent cache.
+    This is the core "process-once" function.
     """
-    if session_id is None:
-        session_id = f"session_{uuid.uuid4().hex[:16]}"
+    # Preprocess data
+    print(f"Starting preprocessing for session {session_id}...")
+    df_processed = preprocess_shipping_data(df)
+    print(f"Preprocessing complete. Shape: {df_processed.shape}")
     
-    # Convert to DataFrame
+    # Store the processed dataframe
+    store_dataframe_as_parquet(df_processed, session_id)
+    
+    return session_id, len(df_processed)
+
+
+def load_data_from_json(data: List[Dict[str, Any]], session_id: str):
+    """
+    Loads data from a JSON object, processes it, and stores it.
+    """
+    print("Loading data from JSON object...")
     df = pd.DataFrame(data)
-    
-    # Preprocess data
-    df = preprocess_shipping_data(df)
-    
-    # Convert back to list of dicts
-    data_list = df.to_dict('records')
-    
-    return session_id, data_list
+    return process_and_store_data(df, session_id)
 
 
-def load_data_from_dataframe(df: pd.DataFrame, session_id: Optional[str] = None) -> tuple:
+def load_data_from_dataframe(df: pd.DataFrame, session_id: str):
     """
-    Load data from pandas DataFrame and preprocess it
-    Returns (session_id, processed_data)
-    Note: Redis has been removed. Data is returned directly.
+    Processes a DataFrame and stores it.
     """
-    if session_id is None:
-        session_id = f"session_{uuid.uuid4().hex[:16]}"
-    
-    # Preprocess data
-    df = preprocess_shipping_data(df)
-    
-    # Convert to list of dicts
-    data_list = df.to_dict('records')
-    
-    return session_id, data_list
+    print("Loading data from DataFrame...")
+    return process_and_store_data(df, session_id)
 
 
-def load_data_from_file(file_path: str, session_id: Optional[str] = None, batch_size: int = 1000) -> Generator[tuple, None, None]:
+def load_data_from_file(file_path: str, session_id: str):
     """
-    Load data from file (CSV, Excel, JSON) and preprocess it in batches.
-    Converts the file to Parquet format first for efficiency.
-    Returns a generator of (session_id, processed_data_chunk)
+    Loads data from a file (CSV, Excel, JSON), processes it, and stores it.
     """
-    if session_id is None:
-        session_id = f"session_{uuid.uuid4().hex[:16]}"
-    
-    parquet_path = file_path.rsplit('.', 1)[0] + '.parquet'
-    if not os.path.exists(parquet_path):
-        convert_to_parquet(file_path, parquet_path)
-        
-    # Now, read from the parquet file in batches
-    parquet_file = pd.read_parquet(parquet_path)
-    for i in range(0, len(parquet_file), batch_size):
-        chunk_df = parquet_file[i:i + batch_size]
-        yield load_data_from_dataframe(chunk_df, session_id)
-
-
-def convert_to_parquet(file_path: str, parquet_path: str):
-    """
-    Convert a file (CSV, Excel, JSON) to Parquet format.
-    """
+    print(f"Loading data from file: {file_path}")
     if file_path.endswith('.csv'):
-        df = pd.read_csv(file_path)
+        df = pd.read_csv(file_path, low_memory=False)
     elif file_path.endswith(('.xlsx', '.xls')):
         df = pd.read_excel(file_path)
     elif file_path.endswith('.json'):
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            df = pd.DataFrame(data)
-        else:
-            raise ValueError("JSON file must contain a list of objects")
+        df = pd.read_json(file_path)
     else:
         raise ValueError(f"Unsupported file format: {file_path}")
     
-    df.to_parquet(parquet_path)
+    return process_and_store_data(df, session_id)

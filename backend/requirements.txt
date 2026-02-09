@@ -7,9 +7,13 @@ pydantic>=2.5.0
 # Data processing
 pandas>=2.2.0
 numpy>=1.26.0
+polars>=0.20.0
 
 # MongoDB
 pymongo==4.6.0
+
+# Caching
+redis>=5.0.0
 
 # Google Drive API
 google-api-python-client==2.108.0

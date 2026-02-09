@@ -1,117 +1,114 @@
 """
-In-memory data store (replaces Redis)
-Stores shipping data temporarily in memory
+Persistent & Cached Data Store
+- Uses Redis to store session metadata (e.g., path to data file).
+- Uses Redis to cache analytics results.
+- Raw data is stored on disk in Parquet format.
 """
-from typing import Dict, List, Any, Optional
-import time
+from typing import Dict, Any, Optional
+import json
 import pandas as pd
+import os
+from backend.utils.redis import get_redis_client
 
-# In-memory data store
-# Key: session_id, Value: dict with 'data', 'metadata', and 'analytics'
-_shipping_data_store: Dict[str, Dict[str, Any]] = {}
+# Directory to store cached data files
+CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Redis key prefixes for better organization
+SESSION_KEY_PREFIX = "session:"
+ANALYTICS_CACHE_PREFIX = "analytics_cache:"
 
-def store_shipping_data(session_id: str, data: List[Dict[str, Any]], metadata: Dict[str, Any] = None, df: Optional[pd.DataFrame] = None):
-    """Store shipping data in memory"""
-    _shipping_data_store[session_id] = {
-        'data': data,
-        'metadata': metadata or {},
-        'analytics': {},  # Store computed analytics here
-        'dataframe': df,  # Store DataFrame to avoid repeated conversions
-        'stored_at': time.time()
-    }
-    print(f"✅ Stored {len(data)} records for session {session_id}")
-    if df is not None:
-        print(f"✅ Stored DataFrame: {df.shape[0]} rows, {df.shape[1]} columns")
+# TTL for session and analytics cache in seconds (e.g., 24 hours)
+SESSION_TTL = 86400
+ANALYTICS_TTL = 86400
 
+def get_parquet_path(session_id: str) -> str:
+    """Generate a consistent file path for a session's Parquet file."""
+    return os.path.join(CACHE_DIR, f"{session_id}.parquet")
 
-def get_shipping_data(session_id: str) -> Optional[List[Dict[str, Any]]]:
-    """Get shipping data from memory"""
-    if session_id in _shipping_data_store:
-        return _shipping_data_store[session_id]['data']
-    return None
-
-
-def get_shipping_metadata(session_id: str) -> Optional[Dict[str, Any]]:
-    """Get shipping metadata from memory"""
-    if session_id in _shipping_data_store:
-        return _shipping_data_store[session_id].get('metadata', {})
-    return None
-
-
-def store_analytics(session_id: str, analytics_type: str, data: Any, filters: Optional[Dict[str, Any]] = None):
-    """Store computed analytics results"""
-    if session_id not in _shipping_data_store:
+def store_dataframe_as_parquet(df: pd.DataFrame, session_id: str):
+    """
+    Saves a DataFrame to a Parquet file and stores its path in Redis.
+    """
+    redis = get_redis_client()
+    file_path = get_parquet_path(session_id)
+    
+    # Save DataFrame to Parquet
+    try:
+        df.to_parquet(file_path)
+    except Exception as e:
+        print(f"❌ Error writing Parquet file {file_path}: {e}")
+        # Optionally, remove the corrupted file or mark session as failed
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        redis.hset(session_key, "status", "write_failed")
+        redis.hset(session_key, "error_message", str(e))
         return
-    
-    # Create cache key based on analytics type and filters
-    cache_key = analytics_type
-    if filters:
-        # Create a stable key from filters
-        filter_key = "_".join(f"{k}:{v}" for k, v in sorted(filters.items()) if v)
-        if filter_key:
-            cache_key = f"{analytics_type}_{filter_key}"
-    
-    if 'analytics' not in _shipping_data_store[session_id]:
-        _shipping_data_store[session_id]['analytics'] = {}
-    
-    _shipping_data_store[session_id]['analytics'][cache_key] = {
-        'data': data,
-        'filters': filters,
-        'computed_at': time.time()
-    }
-    print(f"✅ Cached analytics '{analytics_type}' for session {session_id}")
 
-
-def get_analytics(session_id: str, analytics_type: str, filters: Optional[Dict[str, Any]] = None) -> Optional[Any]:
-    """Get cached analytics results"""
-    if session_id not in _shipping_data_store:
-        return None
     
-    analytics_cache = _shipping_data_store[session_id].get('analytics', {})
-    
-    # Try exact match first
-    cache_key = analytics_type
-    if filters:
-        filter_key = "_".join(f"{k}:{v}" for k, v in sorted(filters.items()) if v)
-        if filter_key:
-            cache_key = f"{analytics_type}_{filter_key}"
-    
-    if cache_key in analytics_cache:
-        return analytics_cache[cache_key]['data']
-    
-    # If no filters, try to find any cached version
-    if not filters:
-        for key, value in analytics_cache.items():
-            if key.startswith(analytics_type) and not value.get('filters'):
-                return value['data']
-    
-    return None
-
-
-def store_dataframe(session_id: str, df: pd.DataFrame):
-    """Store DataFrame in memory to avoid repeated conversions"""
-    if session_id not in _shipping_data_store:
-        _shipping_data_store[session_id] = {
-            'data': None,
-            'metadata': {},
-            'analytics': {},
-            'dataframe': None,
-            'stored_at': time.time()
-        }
-    _shipping_data_store[session_id]['dataframe'] = df
-    print(f"✅ Stored DataFrame for session {session_id} ({df.shape[0]} rows, {df.shape[1]} columns)")
-
+    # Store metadata in Redis
+    session_key = f"{SESSION_KEY_PREFIX}{session_id}"
+    redis.hset(session_key, mapping={
+        "parquet_path": file_path,
+        "record_count": str(len(df)),
+        "status": "processed"
+    })
+    redis.expire(session_key, SESSION_TTL)
+    print(f"✅ Stored DataFrame for session {session_id} at {file_path}")
 
 def get_dataframe(session_id: str) -> Optional[pd.DataFrame]:
-    """Get cached DataFrame"""
-    if session_id in _shipping_data_store:
-        return _shipping_data_store[session_id].get('dataframe')
+    """
+    Loads a DataFrame from a Parquet file using the path stored in Redis.
+    """
+    redis = get_redis_client()
+    session_key = f"{SESSION_KEY_PREFIX}{session_id}"
+    
+    file_path_bytes = redis.hget(session_key, "parquet_path")
+    file_path = file_path_bytes.decode('utf-8') if file_path_bytes else None
+    
+    if file_path and os.path.exists(file_path):
+        print(f"DEBUG: Loading DataFrame for session {session_id} from {file_path}")
+        try:
+            return pd.read_parquet(file_path)
+        except Exception as e:
+            print(f"❌ Error reading Parquet file {file_path}: {e}")
+            redis.hset(session_key, "status", "read_failed")
+            redis.hset(session_key, "error_message", str(e))
+            # Consider deleting the corrupted file and invalidating the session
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            return None
+        
+    print(f"❌ No Parquet file found for session {session_id}")
     return None
 
+def store_analytics(session_id: str, analytics_type: str, data: Any, filters: Optional[Dict[str, Any]] = None):
+    """Store computed analytics results in Redis cache."""
+    redis = get_redis_client()
+    cache_key = f"{ANALYTICS_CACHE_PREFIX}{session_id}:{analytics_type}"
+    
+    if filters:
+        filter_key = "_".join(f"{k}:{v}" for k, v in sorted(filters.items()) if v)
+        if filter_key:
+            cache_key = f"{cache_key}_{filter_key}"
+            
+    redis.set(cache_key, json.dumps(data), ex=ANALYTICS_TTL)
+    print(f"✅ Cached analytics '{analytics_type}' for session {session_id}")
 
-def clear_shipping_data(session_id: str):
-    """Clear shipping data for a session"""
-    if session_id in _shipping_data_store:
-        del _shipping_data_store[session_id]
-        print(f"🗑️  Cleared data for session {session_id}")
+def get_analytics(session_id: str, analytics_type: str, filters: Optional[Dict[str, Any]] = None) -> Optional[Any]:
+    """Get cached analytics results from Redis."""
+    redis = get_redis_client()
+    cache_key = f"{ANALYTICS_CACHE_PREFIX}{session_id}:{analytics_type}"
+
+    if filters:
+        filter_key = "_".join(f"{k}:{v}" for k, v in sorted(filters.items()) if v)
+        if filter_key:
+            cache_key = f"{cache_key}_{filter_key}"
+
+    cached_data = redis.get(cache_key)
+    if cached_data:
+        print(f"✅ Cache hit for analytics '{analytics_type}' for session {session_id}")
+        return json.loads(cached_data)
+        
+    print(f"❌ Cache miss for analytics '{analytics_type}' for session {session_id}")
+    return None
