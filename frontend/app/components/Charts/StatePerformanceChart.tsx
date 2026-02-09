@@ -14,6 +14,19 @@ import {
   Cell,
 } from 'recharts'
 
+const ResponsiveContainerAny = ResponsiveContainer as any
+const BarChartAny = BarChart as any
+const BarAny = Bar as any
+const XAxisAny = XAxis as any
+const YAxisAny = YAxis as any
+const CartesianGridAny = CartesianGrid as any
+const TooltipAny = Tooltip as any
+const LegendAny = Legend as any
+const PieChartAny = PieChart as any
+const PieAny = Pie as any
+const CellAny = Cell as any
+
+
 interface StatePerformanceData {
   state: string
   total_orders: number
@@ -47,13 +60,13 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
   // Use channel data for pie chart if provided, otherwise use state data
   const pieData = channelData && channelData.length > 0
     ? channelData.map((channel) => ({
-        name: channel.channel,
-        value: channel.share_percent,
-      }))
+      name: channel.channel,
+      value: channel.share_percent,
+    }))
     : displayStates.map((state) => ({
-        name: state.state,
-        value: state.order_share,
-      }))
+      name: state.state,
+      value: state.order_share,
+    }))
 
   return (
     <div className="space-y-6">
@@ -62,20 +75,20 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
           {limit ? `Top ${limit} States` : 'All States'} by Order Volume ({displayStates.length} states)
         </h3>
         <div className="overflow-x-auto" style={{ minWidth: '600px' }}>
-          <ResponsiveContainer width={Math.max(600, displayStates.length * 80)} height={400}>
-            <BarChart data={displayStates}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis 
-                dataKey="state" 
-                stroke="#9CA3AF" 
-                angle={-45} 
-                textAnchor="end" 
+          <ResponsiveContainerAny width={Math.max(600, displayStates.length * 80)} height={400}>
+            <BarChartAny data={displayStates}>
+              <CartesianGridAny strokeDasharray="3 3" stroke="#374151" />
+              <XAxis
+                dataKey="state"
+                stroke="#9CA3AF"
+                angle={-45}
+                textAnchor="end"
                 height={Math.min(150, displayStates.length * 12)}
                 tick={{ fontSize: 11 }}
                 interval={0}
               />
-              <YAxis 
-                type="number" 
+              <YAxis
+                type="number"
                 stroke="#9CA3AF"
                 label={{ value: 'Count', angle: -90, position: 'insideLeft' }}
               />
@@ -87,11 +100,11 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
                   color: '#F9FAFB',
                 }}
               />
-              <Legend wrapperStyle={{ color: '#F9FAFB' }} />
-              <Bar dataKey="total_orders" fill="#3B82F6" name="Total Orders" />
-              <Bar dataKey="delivered" fill="#10B981" name="Delivered" />
-            </BarChart>
-          </ResponsiveContainer>
+              <LegendAny wrapperStyle={{ color: '#F9FAFB' }} />
+              <BarAny dataKey="total_orders" fill="#3B82F6" name="Total Orders" />
+              <BarAny dataKey="delivered" fill="#10B981" name="Delivered" />
+            </BarChartAny>
+          </ResponsiveContainerAny>
         </div>
       </div>
 
@@ -100,9 +113,9 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
           <h3 className="text-xl font-bold text-white mb-4">
             {channelData && channelData.length > 0 ? 'Channel Share' : 'State Order Share'}
           </h3>
-          <ResponsiveContainer width="100%" height={450}>
-            <PieChart>
-              <Pie
+          <ResponsiveContainerAny width="100%" height={450}>
+            <PieChartAny>
+              <PieAny
                 data={pieData}
                 cx="50%"
                 cy="45%"
@@ -119,9 +132,9 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
                 paddingAngle={3}
               >
                 {pieData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  <CellAny key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
-              </Pie>
+              </PieAny>
               <Tooltip
                 contentStyle={{
                   backgroundColor: '#1F2937',
@@ -138,15 +151,15 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
                 formatter={(value) => value}
                 iconType="circle"
               />
-            </PieChart>
-          </ResponsiveContainer>
+            </PieChartAny>
+          </ResponsiveContainerAny>
         </div>
 
         <div className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50">
           <h3 className="text-xl font-bold text-white mb-4">Delivery Performance</h3>
-          <ResponsiveContainer width="100%" height={450}>
-            <PieChart>
-              <Pie
+          <ResponsiveContainerAny width="100%" height={450}>
+            <PieChartAny>
+              <PieAny
                 data={(() => {
                   const deliveryData = [
                     {
@@ -181,9 +194,9 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
                       fill: '#6B7280',
                     },
                   ].filter(item => item.value > 0)
-                  
+
                   const total = deliveryData.reduce((sum, item) => sum + item.value, 0)
-                  
+
                   return deliveryData.map(item => ({
                     ...item,
                     percent: total > 0 ? (item.value / total) * 100 : 0,
@@ -209,9 +222,9 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
                   { name: 'RTO', fill: '#EF4444' },
                   { name: 'Pending', fill: '#6B7280' },
                 ].map((entry, index) => (
-                  <Cell key={`delivery-cell-${index}`} fill={entry.fill} />
+                  <CellAny key={`delivery-cell-${index}`} fill={entry.fill} />
                 ))}
-              </Pie>
+              </PieAny>
               <Tooltip
                 contentStyle={{
                   backgroundColor: '#1F2937',
@@ -232,8 +245,8 @@ export default function StatePerformanceChart({ data, limit, channelData }: Prop
                 formatter={(value) => value}
                 iconType="circle"
               />
-            </PieChart>
-          </ResponsiveContainer>
+            </PieChartAny>
+          </ResponsiveContainerAny>
         </div>
       </div>
     </div>

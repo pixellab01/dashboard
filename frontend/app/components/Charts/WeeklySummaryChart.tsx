@@ -16,6 +16,21 @@ import {
   ComposedChart,
 } from 'recharts'
 
+const ResponsiveContainerAny = ResponsiveContainer as any
+const LineChartAny = LineChart as any
+const LineAny = Line as any
+const AreaChartAny = AreaChart as any
+const AreaAny = Area as any
+const BarChartAny = BarChart as any
+const BarAny = Bar as any
+const XAxisAny = XAxis as any
+const YAxisAny = YAxis as any
+const CartesianGridAny = CartesianGrid as any
+const TooltipAny = Tooltip as any
+const LegendAny = Legend as any
+const ComposedChartAny = ComposedChart as any
+
+
 interface WeeklySummaryData {
   order_week: string
   total_orders: number
@@ -43,13 +58,13 @@ export default function WeeklySummaryChart({ data }: Props) {
     <div className="space-y-6">
       <div className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50">
         <h3 className="text-xl font-bold text-white mb-4">Order Volume & Revenue Trends</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <ComposedChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="order_week" stroke="#9CA3AF" />
-            <YAxis yAxisId="left" stroke="#9CA3AF" />
-            <YAxis yAxisId="right" orientation="right" stroke="#9CA3AF" />
-            <Tooltip
+        <ResponsiveContainerAny width="100%" height={300}>
+          <ComposedChartAny data={data}>
+            <CartesianGridAny strokeDasharray="3 3" stroke="#374151" />
+            <XAxisAny dataKey="order_week" stroke="#9CA3AF" />
+            <YAxisAny yAxisId="left" stroke="#9CA3AF" />
+            <YAxisAny yAxisId="right" orientation="right" stroke="#9CA3AF" />
+            <TooltipAny
               contentStyle={{
                 backgroundColor: '#1F2937',
                 border: '1px solid #374151',
@@ -57,9 +72,9 @@ export default function WeeklySummaryChart({ data }: Props) {
                 color: '#F9FAFB',
               }}
             />
-            <Legend wrapperStyle={{ color: '#F9FAFB' }} />
-            <Bar yAxisId="left" dataKey="total_orders" fill="#3B82F6" name="Total Orders" />
-            <Line
+            <LegendAny wrapperStyle={{ color: '#F9FAFB' }} />
+            <BarAny yAxisId="left" dataKey="total_orders" fill="#3B82F6" name="Total Orders" />
+            <LineAny
               yAxisId="right"
               type="monotone"
               dataKey="avg_order_value"
@@ -67,18 +82,18 @@ export default function WeeklySummaryChart({ data }: Props) {
               strokeWidth={2}
               name="Avg Order Value"
             />
-          </ComposedChart>
-        </ResponsiveContainer>
+          </ComposedChartAny>
+        </ResponsiveContainerAny>
       </div>
 
       <div className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50">
         <h3 className="text-xl font-bold text-white mb-4">Delivery Status Breakdown</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <AreaChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="order_week" stroke="#9CA3AF" />
-            <YAxis stroke="#9CA3AF" />
-            <Tooltip
+        <ResponsiveContainerAny width="100%" height={300}>
+          <AreaChartAny data={data}>
+            <CartesianGridAny strokeDasharray="3 3" stroke="#374151" />
+            <XAxisAny dataKey="order_week" stroke="#9CA3AF" />
+            <YAxisAny stroke="#9CA3AF" />
+            <TooltipAny
               contentStyle={{
                 backgroundColor: '#1F2937',
                 border: '1px solid #374151',
@@ -86,8 +101,8 @@ export default function WeeklySummaryChart({ data }: Props) {
                 color: '#F9FAFB',
               }}
             />
-            <Legend wrapperStyle={{ color: '#F9FAFB' }} />
-            <Area
+            <LegendAny wrapperStyle={{ color: '#F9FAFB' }} />
+            <AreaAny
               type="monotone"
               dataKey="del_count"
               stackId="1"
@@ -95,7 +110,7 @@ export default function WeeklySummaryChart({ data }: Props) {
               fill="#10B981"
               name="Delivered"
             />
-            <Area
+            <AreaAny
               type="monotone"
               dataKey="ofd_count"
               stackId="1"
@@ -103,7 +118,7 @@ export default function WeeklySummaryChart({ data }: Props) {
               fill="#3B82F6"
               name="OFD"
             />
-            <Area
+            <AreaAny
               type="monotone"
               dataKey="fad_count"
               stackId="1"
@@ -111,7 +126,7 @@ export default function WeeklySummaryChart({ data }: Props) {
               fill="#F59E0B"
               name="FAD"
             />
-            <Area
+            <AreaAny
               type="monotone"
               dataKey="ndr_count"
               stackId="1"
@@ -119,7 +134,7 @@ export default function WeeklySummaryChart({ data }: Props) {
               fill="#FCD34D"
               name="NDR"
             />
-            <Area
+            <AreaAny
               type="monotone"
               dataKey="rto_count"
               stackId="1"
@@ -127,18 +142,18 @@ export default function WeeklySummaryChart({ data }: Props) {
               fill="#EF4444"
               name="RTO"
             />
-          </AreaChart>
-        </ResponsiveContainer>
+          </AreaChartAny>
+        </ResponsiveContainerAny>
       </div>
 
       <div className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50">
         <h3 className="text-xl font-bold text-white mb-4">Performance Rates</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="order_week" stroke="#9CA3AF" />
-            <YAxis stroke="#9CA3AF" />
-            <Tooltip
+        <ResponsiveContainerAny width="100%" height={300}>
+          <LineChartAny data={data}>
+            <CartesianGridAny strokeDasharray="3 3" stroke="#374151" />
+            <XAxisAny dataKey="order_week" stroke="#9CA3AF" />
+            <YAxisAny stroke="#9CA3AF" />
+            <TooltipAny
               contentStyle={{
                 backgroundColor: '#1F2937',
                 border: '1px solid #374151',
@@ -147,40 +162,40 @@ export default function WeeklySummaryChart({ data }: Props) {
               }}
               formatter={(value: number) => `${value.toFixed(2)}%`}
             />
-            <Legend wrapperStyle={{ color: '#F9FAFB' }} />
-            <Line
+            <LegendAny wrapperStyle={{ color: '#F9FAFB' }} />
+            <LineAny
               type="monotone"
               dataKey="del_percent"
               stroke="#10B981"
               strokeWidth={2}
               name="Delivery %"
             />
-            <Line
+            <LineAny
               type="monotone"
               dataKey="ndr_rate_percent"
               stroke="#FCD34D"
               strokeWidth={2}
               name="NDR Rate %"
             />
-            <Line
+            <LineAny
               type="monotone"
               dataKey="rto_rate_percent"
               stroke="#EF4444"
               strokeWidth={2}
               name="RTO Rate %"
             />
-          </LineChart>
-        </ResponsiveContainer>
+          </LineChartAny>
+        </ResponsiveContainerAny>
       </div>
 
       <div className="bg-black/40 backdrop-blur-lg rounded-xl p-6 border border-gray-700/50">
         <h3 className="text-xl font-bold text-white mb-4">Average Turnaround Time (TAT)</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="order_week" stroke="#9CA3AF" />
-            <YAxis stroke="#9CA3AF" label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} />
-            <Tooltip
+        <ResponsiveContainerAny width="100%" height={300}>
+          <BarChartAny data={data}>
+            <CartesianGridAny strokeDasharray="3 3" stroke="#374151" />
+            <XAxisAny dataKey="order_week" stroke="#9CA3AF" />
+            <YAxisAny stroke="#9CA3AF" label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} />
+            <TooltipAny
               contentStyle={{
                 backgroundColor: '#1F2937',
                 border: '1px solid #374151',
@@ -189,10 +204,10 @@ export default function WeeklySummaryChart({ data }: Props) {
               }}
               formatter={(value: number) => `${value?.toFixed(1) || 'N/A'} hours`}
             />
-            <Legend wrapperStyle={{ color: '#F9FAFB' }} />
-            <Bar dataKey="avg_total_tat" fill="#8B5CF6" name="Avg TAT (hours)" />
-          </BarChart>
-        </ResponsiveContainer>
+            <LegendAny wrapperStyle={{ color: '#F9FAFB' }} />
+            <BarAny dataKey="avg_total_tat" fill="#8B5CF6" name="Avg TAT (hours)" />
+          </BarChartAny>
+        </ResponsiveContainerAny>
       </div>
     </div>
   )
